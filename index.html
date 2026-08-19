@@ -223,6 +223,7 @@ tr.late-row td:first-child{box-shadow:inset 3px 0 0 var(--red)}
   <div class="tabs-in" id="tabs">
     <button class="tab on" data-tab="customers">العملاء والخطوط</button>
     <button class="tab" data-tab="renew">تجديد الباقات</button>
+    <button class="tab" data-tab="extras">الإضافات</button>
     <button class="tab" data-tab="collect">التحصيل</button>
     <button class="tab" data-tab="reports">التقارير</button>
     <button class="tab" data-tab="invoice">الفاتورة الشهرية</button>
@@ -422,16 +423,18 @@ function ensureInvoices(){
 }
 
 function txOfLine(id){ return DB.tx.filter(t=>t.lineId===id); }
+/* الإضافة الملغاة لا تُحتسب في أي رصيد */
+function isVoidExtra(t){ return t.kind==="extra" && t.status==="ملغاة"; }
 function lineBalance(id){
-  let b=0; for(const t of DB.tx){ if(t.lineId!==id) continue; b += (t.kind==="payment" ? -t.amount : t.amount); }
+  let b=0; for(const t of DB.tx){ if(t.lineId!==id||isVoidExtra(t)) continue; b += (t.kind==="payment" ? -t.amount : t.amount); }
   return Math.round(b*100)/100;
 }
 function customerBalance(cid){
-  let b=0; for(const t of DB.tx){ if(t.customerId!==cid) continue; b += (t.kind==="payment" ? -t.amount : t.amount); }
+  let b=0; for(const t of DB.tx){ if(t.customerId!==cid||isVoidExtra(t)) continue; b += (t.kind==="payment" ? -t.amount : t.amount); }
   return Math.round(b*100)/100;
 }
 function dueInPeriod(cid, mk, lineId){
-  return DB.tx.filter(t=>t.kind!=="payment" && t.customerId===cid && t.period===mk && (!lineId||t.lineId===lineId))
+  return DB.tx.filter(t=>t.kind!=="payment" && !isVoidExtra(t) && t.customerId===cid && t.period===mk && (!lineId||t.lineId===lineId))
               .reduce((s,t)=>s+t.amount,0);
 }
 function paidInPeriod(cid, mk, lineId){
@@ -479,17 +482,18 @@ function addonsOf(l){ return Array.isArray(l.addons)?l.addons:[]; }
 function addonsSum(l){ return Math.round(addonsOf(l).reduce((s,a)=>s+(Number(a.amount)||0),0)*100)/100; }
 function pkgPrice(l){ return Number(l.monthly)||0; }
 function renewCharge(l){ return Math.round((pkgPrice(l)+addonsSum(l))*100)/100; }   // قيمة التجديد الجديدة (باقة + إضافات)
-function hasChargeInPeriod(lineId, mk){ return DB.tx.some(t=>t.kind!=="payment" && t.lineId===lineId && t.period===mk); }
+function hasChargeInPeriod(lineId, mk){ return DB.tx.some(t=>(t.kind==="invoice"||t.kind==="renewal") && t.lineId===lineId && t.period===mk); }
 function renewalOfPeriod(lineId, mk){ return DB.tx.find(t=>t.kind==="renewal" && t.lineId===lineId && t.period===mk); }
 function renewDate(l, mk){
   const day = l.startDate ? (Number(String(l.startDate).slice(8,10))||1) : 1;
   return (mk===monthKey(new Date())) ? todayISO() : dueDateOf(mk, day);
 }
-/* ينشئ تجديدًا واحدًا لخط في شهر معيّن — يتجاهل لو الشهر متسجّل له فاتورة/تجديد بالفعل (منعًا للتكرار) */
+/* ينشئ تجديدًا واحدًا لخط في شهر معيّن — يتجاهل لو الشهر متسجّل له فاتورة/تجديد بالفعل أو الباقة منتهية */
 function renewLine(lineId, mk){
   const f = findLine(lineId); if(!f) return null;
   const {c,l} = f;
   if(hasChargeInPeriod(l.id, mk)) return null;
+  if(isExpired(l)) return null; // ممنوع تجديد باقة منتهية قبل تعديل تاريخ الانتهاء
   const adds = addonsOf(l).map(a=>({name:(a.name||"إضافة"), amount:Number(a.amount)||0})).filter(a=>a.amount||a.name);
   const pkg  = pkgPrice(l);
   const amount = Math.round((pkg + adds.reduce((s,a)=>s+a.amount,0))*100)/100;
@@ -498,11 +502,38 @@ function renewLine(lineId, mk){
   DB.tx.push(tx);
   return tx;
 }
-/* الخطوط المؤهّلة للتجديد في شهر معيّن حسب نتيجة البحث الحالية */
+/* الخطوط المؤهّلة للتجديد في شهر معيّن حسب نتيجة البحث الحالية (تستبعد المنتهية) */
 function renewEligibleLines(mk){
   const out=[];
-  searchCustomers(UI.q).forEach(c=>c.lines.forEach(l=>{ if(!l.stopped && !hasChargeInPeriod(l.id,mk)) out.push({c,l}); }));
+  searchCustomers(UI.q).forEach(c=>c.lines.forEach(l=>{ if(!l.stopped && !isExpired(l) && !hasChargeInPeriod(l.id,mk)) out.push({c,l}); }));
   return out;
+}
+
+/* ============================================================
+   تاريخ الانتهاء — الباقة صالحة حتى هذا التاريخ (شامل).
+   بعد مروره تُعتبر منتهية ولا يُسمح بالتجديد إلا بعد تعديل التاريخ.
+   ============================================================ */
+function expiryOf(l){ return l && l.startDate ? String(l.startDate).slice(0,10) : ""; }
+function isExpired(l){ const e=expiryOf(l); return !!e && todayISO() > e; }
+function expiresToday(l){ const e=expiryOf(l); return !!e && todayISO() === e; }
+function expiredLinesIn(list){ const out=[]; (list||DB.customers).forEach(c=>c.lines.forEach(l=>{ if(!l.stopped && isExpired(l)) out.push({c,l}); })); return out; }
+
+/* ============================================================
+   الإضافات — مبالغ إضافية على حساب العميل مع سبب وتاريخ وحالة.
+   تُضاف تلقائيًا لرصيد العميل وتظهر منفصلة عن سعر الباقة في الفاتورة.
+   الحالة: "مستحقة" (تُحتسب) أو "ملغاة" (لا تُحتسب).
+   ============================================================ */
+function firstLineId(cid){ const c=customerById(cid); return c && c.lines[0] ? c.lines[0].id : ""; }
+function extrasOf(cid){ return DB.tx.filter(t=>t.kind==="extra" && t.customerId===cid); }
+function extrasInPeriod(cid, mk){ return DB.tx.filter(t=>t.kind==="extra" && !isVoidExtra(t) && t.customerId===cid && t.period===mk); }
+function addExtra(cid, amount, reason, date, status){
+  const c=customerById(cid); if(!c) return null;
+  date = date || todayISO();
+  const tx = { id:uid(), kind:"extra", customerId:cid, lineId:firstLineId(cid), amount:Math.round((Number(amount)||0)*100)/100,
+    date, period:String(date).slice(0,7), reason:(reason||"").trim()||"إضافة", status:(status==="ملغاة"?"ملغاة":"مستحقة"),
+    note:"إضافة: "+((reason||"").trim()||"—") };
+  DB.tx.push(tx);
+  return tx;
 }
 
 /* ---------- search ---------- */
@@ -533,6 +564,7 @@ function render(){
   document.querySelectorAll(".tab").forEach(t=>t.classList.toggle("on", t.dataset.tab===UI.tab));
   if(UI.tab==="customers") v.innerHTML = viewCustomers();
   else if(UI.tab==="renew") v.innerHTML = viewRenew();
+  else if(UI.tab==="extras") v.innerHTML = viewExtras();
   else if(UI.tab==="collect") v.innerHTML = viewCollect();
   else if(UI.tab==="reports") v.innerHTML = viewReports();
   else if(UI.tab==="invoice") v.innerHTML = viewInvoice();
@@ -613,7 +645,7 @@ function viewCustomers(){
           <div class="no num">${esc(l.number||"—")}</div>
           <div class="meta">
             <span class="badge ${l.type==="تحويل"?"b-tr":"b-new"}">${esc(l.type||"جديد")}</span>
-            &nbsp;استحقاق ${fmtDate(l.startDate)}
+            &nbsp;${isExpired(l)?`<span class="badge b-un">منتهية</span> `:expiresToday(l)?`<span class="badge b-part">تنتهي اليوم</span> `:""}تنتهي ${fmtDate(l.startDate)}
           </div>
           <div class="amt">
             <span class="tiny muted">شهريًا <b class="num" style="color:var(--ink)">${money(l.monthly)}</b></span>
@@ -628,6 +660,7 @@ function viewCustomers(){
     html += `</div>
         <div class="row" style="margin-top:13px;gap:8px">
           <button class="btn sm dark" data-act="payCust" data-id="${c.id}">تحصيل من العميل</button>
+          <button class="btn sm" data-act="newExtra" data-id="${c.id}">+ إضافة مبلغ</button>
           <button class="btn sm" data-act="invoice" data-id="${c.id}">فاتورة الشهر</button>
           <button class="btn sm" data-act="edit" data-id="${c.id}">تعديل البيانات</button>
           <button class="btn sm danger" data-act="del" data-id="${c.id}">حذف</button>
@@ -636,6 +669,90 @@ function viewCustomers(){
     </div>`;
   });
   return html + "</div>";
+}
+
+/* ---------- الإضافات ---------- */
+function viewExtras(){
+  const cur = esc(DB.settings.currency);
+  const list = searchCustomers(UI.q);
+  const ids = new Set(list.map(c=>c.id));
+  const extras = DB.tx.filter(t=>t.kind==="extra" && ids.has(t.customerId))
+                      .sort((a,b)=>String(b.date).localeCompare(String(a.date)));
+  const activeSum = extras.filter(t=>!isVoidExtra(t)).reduce((s,t)=>s+t.amount,0);
+  const voidCount = extras.filter(isVoidExtra).length;
+
+  let html = `
+  <div class="kpis">
+    <div class="kpi"><span>عدد الإضافات</span><b class="num">${extras.length}</b></div>
+    <div class="kpi red"><span>إجمالي المستحق من الإضافات</span><b><span class="num">${money(activeSum)}</span> ${cur}</b></div>
+    <div class="kpi"><span>ملغاة</span><b class="num">${voidCount}</b></div>
+  </div>`;
+
+  html += `
+  <div class="card" style="margin-bottom:16px"><div class="card-b">
+    <div class="row" style="justify-content:space-between">
+      <span class="tiny muted">أضف مبلغًا إضافيًا على حساب العميل (رسوم، تحصيل خاص، تعديل…) مع سبب. بيتضاف تلقائيًا لرصيده ويظهر منفصلًا في فاتورته.</span>
+      <button class="btn primary" data-act="newExtra">+ إضافة مبلغ</button>
+    </div>
+  </div></div>`;
+
+  if(!DB.customers.length){
+    return html + `<div class="card"><div class="empty"><b>مفيش عملاء</b>أضف عميلًا أولًا من تبويب «العملاء والخطوط».</div></div>`;
+  }
+  if(!extras.length){
+    return html + `<div class="card"><div class="empty"><b>لا توجد إضافات</b>اضغط «+ إضافة مبلغ» لتسجيل أول إضافة.</div></div>`;
+  }
+
+  html += `<div class="tbl-wrap card" style="padding:0"><table><thead><tr>
+    <th>العميل</th><th class="n">المبلغ</th><th>سبب الإضافة</th><th class="n">التاريخ</th><th>الحالة</th><th></th>
+  </tr></thead><tbody>`;
+  extras.forEach(t=>{
+    const c = customerById(t.customerId);
+    const vo = isVoidExtra(t);
+    html += `<tr${vo?` style="opacity:.55"`:``}>
+      <td><b>${esc(c?c.name:"—")}</b></td>
+      <td class="n num" style="font-weight:700;${vo?"text-decoration:line-through":"color:var(--red)"}">${money(t.amount)}</td>
+      <td>${esc(t.reason||"—")}</td>
+      <td class="n num">${fmtDate(t.date)}</td>
+      <td><span class="badge ${vo?"b-gray":"b-un"}">${vo?"ملغاة":"مستحقة"}</span></td>
+      <td style="white-space:nowrap">
+        ${vo
+          ? `<button class="btn sm" data-act="extraActivate" data-tx="${t.id}">تفعيل</button>`
+          : `<button class="btn sm" data-act="extraVoid" data-tx="${t.id}">إلغاء</button>`}
+        <button class="btn sm danger" data-act="extraDel" data-tx="${t.id}">حذف</button>
+      </td>
+    </tr>`;
+  });
+  html += `</tbody></table></div>`;
+  return html;
+}
+function extraModal(prefillCid){
+  if(!DB.customers.length){ toast("أضف عميلًا أولًا"); return; }
+  const opts = DB.customers.map(c=>`<option value="${c.id}" ${c.id===prefillCid?"selected":""}>${esc(c.name)}</option>`).join("");
+  openModal(`
+    <div class="modal-h"><h3>إضافة مبلغ على العميل</h3><button class="x" data-act="close">×</button></div>
+    <div class="modal-b">
+      <div class="row">
+        <div class="grow"><label>العميل *</label><select id="exCid">${opts}</select></div>
+        <div class="grow"><label>المبلغ *</label><input type="number" id="exAmt" min="0" step="0.5" placeholder="0"></div>
+      </div>
+      <div class="row" style="margin-top:10px">
+        <div class="grow"><label>سبب الإضافة</label><input type="text" id="exReason" placeholder="مثال: رسوم تأخير / شحن كارت"></div>
+        <div class="grow"><label>تاريخ الإضافة</label><input type="date" id="exDate" value="${todayISO()}"></div>
+        <div class="grow" style="max-width:160px"><label>الحالة</label><select id="exStatus">
+          <option value="مستحقة" selected>مستحقة</option><option value="ملغاة">ملغاة</option>
+        </select></div>
+      </div>
+    </div>
+    <div class="modal-f"><button class="btn primary" data-act="saveExtra">حفظ الإضافة</button><button class="btn ghost" data-act="close">إلغاء</button></div>`);
+}
+function saveExtra(){
+  const cid=$("#exCid").value, amt=parseNum($("#exAmt").value), reason=$("#exReason").value.trim(),
+        date=$("#exDate").value||todayISO(), status=$("#exStatus").value;
+  if(amt<=0){ toast("اكتب مبلغ صحيح"); return; }
+  addExtra(cid, amt, reason, date, status);
+  save(); closeModal(); render();
+  toast(`اتضافت إضافة ${money(amt)} ${DB.settings.currency}`);
 }
 
 /* ---------- تجديد الباقات ---------- */
@@ -649,9 +766,10 @@ function viewRenew(){
   const months = monthsFrom(startMk, next).reverse();
 
   // أرقام مجمّعة للـ KPIs
-  let eligibleCount=0, renewedCount=0, eligibleTotal=0;
+  let eligibleCount=0, renewedCount=0, eligibleTotal=0, expiredCount=0;
   list.forEach(c=>c.lines.forEach(l=>{
     if(l.stopped) return;
+    if(isExpired(l)){ expiredCount++; return; }
     if(hasChargeInPeriod(l.id,mk)){ renewedCount++; }
     else { eligibleCount++; eligibleTotal += renewCharge(l); }
   }));
@@ -668,6 +786,7 @@ function viewRenew(){
     <div class="kpi"><span>خطوط قابلة للتجديد — ${monthLabel(mk)}</span><b class="num">${eligibleCount}</b></div>
     <div class="kpi green"><span>مُجدّدة بالفعل هذا الشهر</span><b class="num">${renewedCount}</b></div>
     <div class="kpi red"><span>إجمالي التجديد لو جدّدت الكل</span><b><span class="num">${money(eligibleTotal)}</span> ${cur}</b></div>
+    <div class="kpi ${expiredCount?"red":""}"><span>باقات منتهية</span><b class="num">${expiredCount}</b></div>
     <div class="kpi amber"><span>محدَّد الآن</span><b class="num">${selCount}</b></div>
   </div>`;
 
@@ -692,13 +811,20 @@ function viewRenew(){
     return html + `<div class="card"><div class="empty"><b>مفيش عملاء</b>أضف عميلًا أولًا من تبويب «العملاء والخطوط».</div></div>`;
   }
 
+  if(expiredCount){
+    html += `<div class="card" style="margin-bottom:16px;border-color:#F5C6C6;background:var(--red-soft)"><div class="card-b" style="color:var(--red-deep);margin:0">
+      <b>⚠ فيه <span class="num">${expiredCount}</span> باقة وصلت تاريخ انتهائها.</b>
+      مش هتقدر تجدّدها إلا لما تعدّل «تاريخ الانتهاء» بتاعها من بيانات العميل الأول (زرار «عدّل التاريخ» جنب الخط بالأسفل).
+    </div></div>`;
+  }
+
   html += `<div class="tbl-wrap card" style="padding:0"><table><thead><tr>
     <th style="width:34px"></th><th>الخط</th><th class="n">سعر الباقة</th><th class="n">الإضافات</th>
     <th class="n">الحساب السابق</th><th class="n">الإجمالي المطلوب</th><th>الحالة</th>
   </tr></thead><tbody>`;
 
   list.forEach(c=>{
-    const eligLines = c.lines.filter(l=>!l.stopped && !hasChargeInPeriod(l.id,mk));
+    const eligLines = c.lines.filter(l=>!l.stopped && !isExpired(l) && !hasChargeInPeriod(l.id,mk));
     const allSel = eligLines.length>0 && eligLines.every(l=>UI.renewSel[l.id]);
     html += `<tr style="background:var(--shell)">
       <td>${eligLines.length?`<input type="checkbox" class="renew-cust" data-cid="${c.id}" ${allSel?"checked":""} title="تحديد كل خطوط العميل">`:""}</td>
@@ -709,23 +835,35 @@ function viewRenew(){
       const pkg = pkgPrice(l), add = addonsSum(l), prev = lineBalance(l.id);
       const addList = addonsOf(l);
       const charged = hasChargeInPeriod(l.id, mk);
+      const expired = isExpired(l);
       const rnw = renewalOfPeriod(l.id, mk);
       const total = prev + renewCharge(l);
       const checked = !!UI.renewSel[l.id];
       const addCell = add>0
         ? `<b class="num">${money(add)}</b>${addList.length?`<br><span class="tiny muted">${addList.map(a=>esc(a.name)+" "+money(a.amount)).join(" · ")}</span>`:""}`
         : `<span class="tiny muted">—</span>`;
-      html += `<tr class="${l.stopped?"":""}">
-        <td>${(l.stopped)?`<span class="tiny muted">موقوف</span>`:charged?"":`<input type="checkbox" class="renew-cb" data-line="${l.id}" data-cid="${c.id}" ${checked?"checked":""}>`}</td>
+      const cbCell = l.stopped ? `<span class="tiny muted">موقوف</span>`
+                   : expired    ? ``
+                   : charged     ? ``
+                   : `<input type="checkbox" class="renew-cb" data-line="${l.id}" data-cid="${c.id}" ${checked?"checked":""}>`;
+      const statusCell = expired
+          ? `<span class="badge b-un">منتهية</span>`
+          : charged
+              ? `<span class="badge b-paid">مُجدّدة</span>${rnw?`<br><span class="tiny muted">بـ <span class="num">${money(rnw.amount)}</span></span>`:""}`
+              : `<span class="badge b-gray">جاهزة للتجديد</span>`;
+      html += `<tr${expired?` style="background:#FFF7F7"`:``}>
+        <td>${cbCell}</td>
         <td><b class="num">${esc(l.number||"—")}</b> <span class="badge ${l.type==="تحويل"?"b-tr":"b-new"}">${esc(l.type||"جديد")}</span>
-            <div style="margin-top:6px"><button class="btn sm" data-act="editAddons" data-line="${l.id}">تعديل الإضافات</button></div></td>
+            <div class="tiny ${expired?"":"muted"}" style="margin-top:2px;${expired?"color:var(--red)":""}">تنتهي ${fmtDate(l.startDate)}</div>
+            <div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap">
+              <button class="btn sm" data-act="editAddons" data-line="${l.id}">تعديل الإضافات</button>
+              ${expired?`<button class="btn sm danger" data-act="edit" data-id="${c.id}">عدّل التاريخ</button>`:``}
+            </div></td>
         <td class="n num">${money(pkg)}</td>
         <td class="n">${addCell}</td>
         <td class="n num" style="color:${prev>0.009?"var(--red)":prev<-0.009?"var(--green)":"var(--ink-3)"}">${money(prev)}</td>
-        <td class="n num" style="font-weight:800;color:var(--ink)">${charged?money(prev):money(total)}</td>
-        <td>${charged
-              ? `<span class="badge b-paid">مُجدّدة</span>${rnw?`<br><span class="tiny muted">بـ <span class="num">${money(rnw.amount)}</span></span>`:""}`
-              : `<span class="badge b-gray">جاهزة للتجديد</span>`}</td>
+        <td class="n num" style="font-weight:800;color:var(--ink)">${(charged||expired)?money(prev):money(total)}</td>
+        <td>${statusCell}</td>
       </tr>`;
     });
   });
@@ -913,14 +1051,18 @@ function invoiceHtml(cid, mk){
   const c = customerById(cid); if(!c) return "";
   const day = Number(DB.settings.reportDay)||8;
   const rows = c.lines.map(l=>{
-    const inv = DB.tx.filter(t=>t.kind!=="payment" && t.lineId===l.id && t.period===mk).reduce((s,t)=>s+t.amount,0);
+    const inv = DB.tx.filter(t=>(t.kind==="invoice"||t.kind==="renewal") && t.lineId===l.id && t.period===mk).reduce((s,t)=>s+t.amount,0);
     const pay = DB.tx.filter(t=>t.kind==="payment" && t.lineId===l.id && String(t.date).slice(0,7)===mk).reduce((s,t)=>s+t.amount,0);
     return {l,inv,pay,bal:lineBalance(l.id)};
   });
-  const monthDue = rows.reduce((s,r)=>s+r.inv,0);
+  const extras = extrasInPeriod(cid, mk);                 // الإضافات المستحقة في نفس الشهر
+  const pkgDue = rows.reduce((s,r)=>s+r.inv,0);
+  const extraDue = extras.reduce((s,t)=>s+t.amount,0);
+  const monthDue = pkgDue + extraDue;
   const monthPaid = rows.reduce((s,r)=>s+r.pay,0);
   const totalBal = customerBalance(cid);
   const prev = totalBal - monthDue + monthPaid;
+  const cur = esc(DB.settings.currency);
   return `<div class="inv" id="invBox">
     <div class="inv-h">
       <div><h2>${esc(DB.settings.shopName||"حساب فودافون")}</h2><div class="tiny muted">فاتورة خدمات خطوط شهرية</div></div>
@@ -930,23 +1072,34 @@ function invoiceHtml(cid, mk){
     <div class="inv-to"><div class="tiny muted">العميل</div><b>${esc(c.name)}</b>
       <div class="tiny muted"><span class="num">${c.lines.length}</span> خط · ${c.note?esc(c.note):"—"}</div></div>
     <div class="tbl-wrap"><table><thead><tr>
-      <th>#</th><th>رقم الخط</th><th>النوع</th><th>تاريخ الاستحقاق</th><th class="n">فاتورة الشهر</th><th class="n">المدفوع</th><th class="n">رصيد الخط</th>
+      <th>#</th><th>رقم الخط</th><th>النوع</th><th>تاريخ الانتهاء</th><th class="n">سعر الباقة</th><th class="n">المدفوع</th><th class="n">رصيد الخط</th>
     </tr></thead><tbody>
     ${rows.map((r,i)=>`<tr>
       <td class="num">${i+1}</td>
       <td class="num"><b>${esc(r.l.number)}</b></td>
       <td><span class="badge ${r.l.type==="تحويل"?"b-tr":"b-new"}">${esc(r.l.type||"جديد")}</span></td>
-      <td class="num">${fmtDate(dueDateOf(mk, Number(String(r.l.startDate||"").slice(8,10))||day))}</td>
+      <td class="num">${fmtDate(r.l.startDate)}</td>
       <td class="n num">${money(r.inv)}</td>
       <td class="n num">${money(r.pay)}</td>
       <td class="n num" style="font-weight:700;color:${r.bal>0.009?"var(--red)":"var(--green)"}">${money(r.bal)}</td>
     </tr>`).join("")}
     </tbody></table></div>
+    ${extras.length?`
+    <div style="margin-top:6px" class="tbl-wrap"><table><thead><tr>
+      <th colspan="3" style="background:var(--amber-soft);color:var(--amber)">الإضافات على الحساب</th>
+    </tr><tr><th>سبب الإضافة</th><th>التاريخ</th><th class="n">المبلغ</th></tr></thead><tbody>
+    ${extras.map(t=>`<tr>
+      <td>${esc(t.reason||"إضافة")}</td>
+      <td class="num">${fmtDate(t.date)}</td>
+      <td class="n num" style="font-weight:700">${money(t.amount)}</td>
+    </tr>`).join("")}
+    </tbody></table></div>`:""}
     <div class="tot">
       <div><span>رصيد سابق</span><b class="num">${money(prev)}</b></div>
-      <div><span>فواتير ${monthLabel(mk)}</span><b class="num">${money(monthDue)}</b></div>
+      <div><span>باقات ${monthLabel(mk)}</span><b class="num">${money(pkgDue)}</b></div>
+      ${extraDue?`<div><span>إضافات ${monthLabel(mk)}</span><b class="num">${money(extraDue)}</b></div>`:""}
       <div><span>المدفوع خلال الشهر</span><b class="num" style="color:var(--green)">− ${money(monthPaid)}</b></div>
-      <div class="big"><span>${totalBal>0.009?"المطلوب سداده":"الرصيد"}</span><b class="num" style="color:${totalBal>0.009?"var(--red)":"var(--green)"}">${money(Math.abs(totalBal))} ${esc(DB.settings.currency)}</b></div>
+      <div class="big"><span>${totalBal>0.009?"المطلوب سداده":"الرصيد"}</span><b class="num" style="color:${totalBal>0.009?"var(--red)":"var(--green)"}">${money(Math.abs(totalBal))} ${cur}</b></div>
     </div>
     <div class="stamp">
       <div>السداد قبل يوم <span class="num">${day}</span> من كل شهر.<br>شكرًا لتعاملكم معنا.</div>
@@ -960,7 +1113,7 @@ function viewData(){
   return `
   <div class="card" style="margin-bottom:16px"><div class="card-h"><h3>استيراد الشيت</h3></div><div class="card-b">
     <p class="tiny muted" style="margin-top:0">انسخ الأعمدة من Excel والصقها هنا (سطر لكل خط). ترتيب الأعمدة:
-      <b>اسم العميل | رقم الخط | نوع الخط | تاريخ الاستحقاق | قيمة الفاتورة</b>.
+      <b>اسم العميل | رقم الخط | نوع الخط | تاريخ الانتهاء | قيمة الباقة</b>.
       لو العميل له أكتر من خط، كرّر اسمه في كل سطر (لحد ٥ خطوط).</p>
     <textarea id="imp" rows="7" placeholder="أحمد محمد&#9;01001234567&#9;جديد&#9;08/01/2026&#9;250
 أحمد محمد&#9;01007654321&#9;تحويل&#9;08/01/2026&#9;180
@@ -1022,7 +1175,7 @@ function lineRow(l, i){
     <div><label>رقم الخط ${i+1}</label><input type="text" class="f-num" value="${esc(l.number||"")}" placeholder="01xxxxxxxxx" inputmode="numeric"></div>
     <div><label>النوع</label><select class="f-type">
       <option ${l.type!=="تحويل"?"selected":""}>جديد</option><option ${l.type==="تحويل"?"selected":""}>تحويل</option></select></div>
-    <div><label>تاريخ الاستحقاق (العرض)</label><input type="date" class="f-date" value="${esc(l.startDate||todayISO())}"></div>
+    <div><label>تاريخ الانتهاء</label><input type="date" class="f-date" value="${esc(l.startDate||todayISO())}"></div>
     <div><label>سعر الباقة (شهري)</label><input type="number" class="f-amt" value="${l.monthly??""}" min="0" step="0.5" placeholder="0"></div>
     <div><button class="btn sm danger" data-act="rmLine">حذف</button></div>
     <div class="ao-inline" style="grid-column:1/-1;border-top:1px dashed var(--line);padding-top:8px;margin-top:2px">
@@ -1054,7 +1207,7 @@ function customerModal(id){
       <label>الخطوط (من ١ لحد ٥)</label>
       <div id="lines">${lines.map((l,i)=>lineRow(l,i)).join("")}</div>
       <button class="btn sm" data-act="addLine" style="margin-top:4px">+ إضافة خط</button>
-      <p class="tiny muted">تاريخ الاستحقاق هو تاريخ العرض — منه بيبدأ التطبيق يحسب فاتورة كل شهر تلقائيًا.</p>
+      <p class="tiny muted">«تاريخ الانتهاء» هو آخر يوم صالح للباقة. بعد ما يعدّي، الباقة تعتبر منتهية ومش هتقدر تجدّدها إلا لما تعدّل التاريخ.</p>
     </div>
     <div class="modal-f"><button class="btn primary" data-act="saveCust">حفظ</button><button class="btn ghost" data-act="close">إلغاء</button></div>`);
 }
@@ -1087,8 +1240,9 @@ function ledgerModal(lineId){
   let run = lineBalance(l.id);
   const rows = tx.map(t=>{
     const cur = run;
-    run -= (t.kind==="payment" ? -t.amount : t.amount);
-    return `<tr><td class="num">${fmtDate(t.date)}</td><td class="tiny">${esc(t.note||"")}</td>
+    const vo = isVoidExtra(t);
+    run -= (t.kind==="payment" ? -t.amount : (vo?0:t.amount));
+    return `<tr${vo?` style="opacity:.55"`:``}><td class="num">${fmtDate(t.date)}</td><td class="tiny">${esc(t.note||"")}${vo?` <span class="badge b-gray">ملغاة</span>`:""}</td>
       <td class="n num">${t.kind!=="payment"?money(t.amount):"—"}</td>
       <td class="n num" style="color:var(--green)">${t.kind==="payment"?money(t.amount):"—"}</td>
       <td class="n num" style="font-weight:700">${money(cur)}</td>
@@ -1126,7 +1280,7 @@ function detailModal(cid){
 function renewReviewModal(){
   const mk = UI.renewMonth, cur = esc(DB.settings.currency);
   const items = Object.keys(UI.renewSel).filter(id=>UI.renewSel[id])
-    .map(id=>findLine(id)).filter(f=>f && !hasChargeInPeriod(f.l.id,mk));
+    .map(id=>findLine(id)).filter(f=>f && !isExpired(f.l) && !hasChargeInPeriod(f.l.id,mk));
   if(!items.length){ toast("مفيش خطوط محددة قابلة للتجديد"); return; }
 
   let gPkg=0, gAdd=0, gPrev=0, gTot=0;
@@ -1272,6 +1426,13 @@ document.addEventListener("click", e=>{
   if(act==="doRenew"){ doRenew(); return; }
   if(act==="doRenewPay"){ doRenewPay(); return; }
   if(act==="editAddons"){ addonsModal(t.dataset.line); return; }
+
+  /* ---- الإضافات ---- */
+  if(act==="newExtra"){ extraModal(t.dataset.id||""); return; }
+  if(act==="saveExtra"){ saveExtra(); return; }
+  if(act==="extraVoid"){ const x=DB.tx.find(t2=>t2.id===t.dataset.tx); if(x){ x.status="ملغاة"; save(); render(); toast("اتلغت الإضافة"); } return; }
+  if(act==="extraActivate"){ const x=DB.tx.find(t2=>t2.id===t.dataset.tx); if(x){ x.status="مستحقة"; save(); render(); toast("اتفعّلت الإضافة"); } return; }
+  if(act==="extraDel"){ if(!confirm("حذف الإضافة دي نهائيًا؟")) return; DB.tx=DB.tx.filter(t2=>t2.id!==t.dataset.tx); save(); render(); toast("اتحذفت"); return; }
   if(act==="aoAdd"){
     const box=$("#aoRows"); const empty=$("#aoEmpty"); if(empty) empty.remove();
     box.insertAdjacentHTML("beforeend", addonRow(null)); return;
@@ -1298,7 +1459,7 @@ document.addEventListener("click", e=>{
   if(act==="lineLookup"){ UI.lineQ=$("#lineQ").value; $("#lineResult").innerHTML=lineLookupHtml(UI.lineQ); return; }
   if(act==="doImport"){ doImport(); return; }
   if(act==="template"){
-    downloadFile("نموذج-بيانات-فودافون.csv","\uFEFF"+["اسم العميل,رقم الخط,نوع الخط,تاريخ الاستحقاق,قيمة الفاتورة",
+    downloadFile("نموذج-بيانات-فودافون.csv","\uFEFF"+["اسم العميل,رقم الخط,نوع الخط,تاريخ الانتهاء,قيمة الباقة",
       "أحمد محمد,01001234567,جديد,08/01/2026,250","أحمد محمد,01007654321,تحويل,08/01/2026,180","منى علي,01112223334,جديد,15/02/2026,300"].join("\n"),"text/csv");
     return;
   }
@@ -1342,7 +1503,7 @@ document.addEventListener("change", e=>{
   }
   if(e.target.classList.contains("renew-cust")){
     const c=customerById(e.target.dataset.cid); if(!c) return;
-    c.lines.forEach(l=>{ if(l.stopped||hasChargeInPeriod(l.id,UI.renewMonth)) return;
+    c.lines.forEach(l=>{ if(l.stopped||isExpired(l)||hasChargeInPeriod(l.id,UI.renewMonth)) return;
       if(e.target.checked) UI.renewSel[l.id]=true; else delete UI.renewSel[l.id]; });
     render();
   }
@@ -1479,7 +1640,7 @@ function downloadFile(name, content, mime){
 }
 function csv(rows){ return "\uFEFF"+rows.map(r=>r.map(c=>{ const s=String(c??""); return /[",\n]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s; }).join(",")).join("\n"); }
 function exportCustomersCsv(){
-  const rows=[["اسم العميل","رقم الخط","نوع الخط","تاريخ الاستحقاق","الفاتورة الشهرية","رصيد الخط","إجمالي مديونية العميل"]];
+  const rows=[["اسم العميل","رقم الخط","نوع الخط","تاريخ الانتهاء","سعر الباقة","رصيد الخط","إجمالي مديونية العميل"]];
   DB.customers.forEach(c=>c.lines.forEach(l=>rows.push([c.name,l.number,l.type,fmtDate(l.startDate),l.monthly,lineBalance(l.id),customerBalance(c.id)])));
   downloadFile(`العملاء-والخطوط-${todayISO()}.csv`, csv(rows), "text/csv");
 }
