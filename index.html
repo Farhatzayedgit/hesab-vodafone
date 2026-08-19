@@ -61,25 +61,6 @@ h1,h2,h3,h4{font-family:var(--display);margin:0;line-height:1.3}
 .topsearch input:focus{border-color:var(--red);box-shadow:0 0 0 3px rgba(230,0,0,.25)}
 .topsearch span{position:absolute;inset-inline-start:12px;top:50%;transform:translateY(-50%);color:#7C8492;font-size:14px}
 .tabs{background:var(--paper);border-bottom:1px solid var(--line);position:sticky;top:59px;z-index:30}
-.pill{
-  border:1px solid #2C3038;background:#1D2027;color:#C6CCD6;border-radius:999px;padding:8px 13px;
-  font-size:12.5px;font-weight:600;display:inline-flex;align-items:center;gap:7px;white-space:nowrap;font-family:var(--body)
-}
-.pill:hover{border-color:#4A515C}
-.pill::before{content:"";width:8px;height:8px;border-radius:50%;background:#6B7280;flex:0 0 auto}
-.pill.ok::before{background:#22C55E}
-.pill.warn::before{background:#F59E0B}
-.pill.bad::before{background:var(--red)}
-.pill.go::before{background:#38BDF8}
-.steps{counter-reset:s;padding:0;margin:0;list-style:none}
-.steps li{counter-increment:s;position:relative;padding:0 42px 16px 0;border-inline-start:2px solid var(--line);margin-inline-start:13px}
-.steps li:last-child{border-inline-start-color:transparent;padding-bottom:0}
-.steps li::before{
-  content:counter(s);position:absolute;inset-inline-start:-14px;top:0;width:26px;height:26px;border-radius:50%;
-  background:var(--ink);color:#fff;display:grid;place-items:center;font-family:var(--display);font-weight:700;font-size:13px
-}
-.steps li b{display:block;font-family:var(--display);margin-bottom:3px}
-.steps li p{margin:0;font-size:13.5px;color:var(--ink-2)}
 .tabs-in{max-width:1180px;margin:0 auto;padding:0 8px;display:flex;gap:2px;overflow-x:auto}
 .tab{
   background:none;border:0;padding:13px 14px;font-weight:600;color:var(--ink-3);
@@ -234,7 +215,6 @@ tr.late-row td:first-child{box-shadow:inset 3px 0 0 var(--red)}
       <span>&#128269;</span>
       <input id="q" type="text" placeholder="ابحث بالاسم أو برقم الخط… (اكتب الاسم والرقم معًا للبحث المزدوج)" autocomplete="off">
     </div>
-    <button class="pill off" id="syncPill" data-act="syncNow" title="اضغط للمزامنة">المزامنة مقفولة</button>
     <button class="btn primary" id="btnNew">+ عميل جديد</button>
   </div>
 </header>
@@ -242,6 +222,7 @@ tr.late-row td:first-child{box-shadow:inset 3px 0 0 var(--red)}
 <nav class="tabs">
   <div class="tabs-in" id="tabs">
     <button class="tab on" data-tab="customers">العملاء والخطوط</button>
+    <button class="tab" data-tab="renew">تجديد الباقات</button>
     <button class="tab" data-tab="collect">التحصيل</button>
     <button class="tab" data-tab="reports">التقارير</button>
     <button class="tab" data-tab="invoice">الفاتورة الشهرية</button>
@@ -260,127 +241,30 @@ tr.late-row td:first-child{box-shadow:inset 3px 0 0 var(--red)}
 <div id="toast"></div>
 <div id="printArea"></div>
 
-<script type="text/plain" id="gsCode">/** حساب فودافون — التطبيق + المزامنة جوّه حساب جوجل بتاعك */
+<!-- ============================================================
+     Firebase — مكتبات السحابة (متغيّرش حاجة هنا)
+     ============================================================ -->
+<script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-database-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-auth-compat.js"></script>
 
-/* بيفتح التطبيق نفسه لما تفتح رابط النشر */
-function doGet(e){
-  if(e && e.parameter && e.parameter.ping) return out_({ ok:true, ping:"hesab-vodafone", now:Date.now() });
-  return HtmlService.createHtmlOutputFromFile("index")
-    .setTitle("حساب فودافون")
-    .addMetaTag("viewport", "width=device-width, initial-scale=1");
-}
-
-/* بينده من داخل التطبيق مباشرة — جوجل متأكد إنك انت صاحب الحساب */
-function syncApi(req){
-  var lock = LockService.getScriptLock();
-  lock.waitLock(25000);
-  try{
-    var now = Date.now();
-    var ch  = (req && req.changes) || {};
-    var who = "";
-    try{ who = Session.getActiveUser().getEmail(); }catch(e){}
-    return {
-      ok:true, now:now, user:who,
-      customers: sync_("customers", CUST_COLS, ch.customers||[], Number(req.since)||0, now, custToRow_, rowToCust_),
-      tx:        sync_("tx",        TX_COLS,   ch.tx||[],        Number(req.since)||0, now, txToRow_,   rowToTx_)
-    };
-  } finally { lock.releaseLock(); }
-}
-
-/* للطريقة التانية: التطبيق مرفوع بره وبيكلّم السكريبت بالرابط */
-var SECRET = "ghayyar-el-kelma-di-123";
-
-var CUST_COLS = ["id","name","note","numbers","lines_json","updatedAt","serverAt","deleted"];
-var TX_COLS   = ["id","date","customerName","lineNumber","kind","amount","period","note","branch","customerId","lineId","updatedAt","serverAt","deleted"];
-
-function doPost(e){
-  try{
-    var req = JSON.parse(e.postData.contents);
-    if(String(req.key||"") !== SECRET) return out_({ ok:false, error:"مفتاح المزامنة غلط" });
-    return out_(syncApi(req));
-  }catch(err){ return out_({ ok:false, error:String(err) }); }
-}
-
-function out_(o){
-  return ContentService.createTextOutput(JSON.stringify(o)).setMimeType(ContentService.MimeType.JSON);
-}
-
-function sheet_(name, cols){
-  var ss = SpreadsheetApp.getActiveSpreadsheet();
-  var sh = ss.getSheetByName(name);
-  if(!sh){
-    sh = ss.insertSheet(name);
-    sh.getRange(1,1,sh.getMaxRows(),cols.length).setNumberFormat("@");
-    sh.getRange(1,1,1,cols.length).setValues([cols]).setFontWeight("bold");
-    sh.setFrozenRows(1);
-  }
-  return sh;
-}
-
-function sync_(name, cols, incoming, since, now, toRow, toRec){
-  var sh   = sheet_(name, cols);
-  var last = sh.getLastRow();
-  var vals = last > 1 ? sh.getRange(2,1,last-1,cols.length).getValues() : [];
-  var uAt  = cols.indexOf("updatedAt");
-  var sAt  = cols.indexOf("serverAt");
-  var idx  = {};
-  for(var i=0;i<vals.length;i++){ var id = String(vals[i][0]); if(id) idx[id] = i; }
-
-  for(var k=0;k<incoming.length;k++){
-    var rec = incoming[k];
-    if(!rec || !rec.id) continue;
-    var rid = String(rec.id);
-    if(idx.hasOwnProperty(rid)){
-      var cur = Number(vals[idx[rid]][uAt]) || 0;
-      if((Number(rec.updatedAt)||0) >= cur) vals[idx[rid]] = toRow(rec, now);   // الأحدث يكسب
-    }else{
-      idx[rid] = vals.length;
-      vals.push(toRow(rec, now));
-    }
-  }
-
-  if(vals.length){
-    var need = vals.length + 1 - sh.getMaxRows();
-    if(need > 0) sh.insertRowsAfter(sh.getMaxRows(), need + 50);
-    sh.getRange(2,1,vals.length,cols.length).setValues(vals);
-  }
-
-  var res = [];
-  for(var j=0;j<vals.length;j++){
-    if((Number(vals[j][sAt])||0) > since) res.push(toRec(vals[j]));
-  }
-  return res;
-}
-
-function custToRow_(r, now){
-  var lines = r.lines || [];
-  var nums  = [];
-  for(var i=0;i<lines.length;i++) nums.push(lines[i].number);
-  return [ String(r.id), String(r.name||""), String(r.note||""), nums.join(" | "),
-           JSON.stringify(lines), Number(r.updatedAt)||now, now, r.deleted?"1":"" ];
-}
-function rowToCust_(row){
-  var lines = [];
-  try{ lines = JSON.parse(row[4] || "[]"); }catch(e){}
-  return { id:String(row[0]), name:String(row[1]), note:String(row[2]), lines:lines,
-           updatedAt:Number(row[5])||0, deleted: String(row[7])==="1" };
-}
-function txToRow_(r, now){
-  return [ String(r.id), d_(r.date), String(r.customerName||""), String(r.lineNumber||""),
-           String(r.kind||""), Number(r.amount)||0, String(r.period||""), String(r.note||""),
-           String(r.branch||""), String(r.customerId||""), String(r.lineId||""),
-           Number(r.updatedAt)||now, now, r.deleted?"1":"" ];
-}
-function rowToTx_(row){
-  return { id:String(row[0]), date:d_(row[1]), kind:String(row[4]), amount:Number(row[5])||0,
-           period:String(row[6]), note:String(row[7]), branch:String(row[8]),
-           customerId:String(row[9]), lineId:String(row[10]),
-           updatedAt:Number(row[11])||0, deleted: String(row[13])==="1" };
-}
-function d_(v){
-  if(v instanceof Date) return Utilities.formatDate(v, "GMT+2", "yyyy-MM-dd");
-  return String(v||"").slice(0,10);
-}
+<!-- ============================================================
+     ★ إعدادات مشروعك — عدّل هنا فقط ★
+     انسخ القيم من: Firebase Console ← إعدادات المشروع (⚙️) ← عام
+     ← "تطبيقاتك" ← تطبيق ويب (</>) ← Firebase SDK snippet ← Config
+     ============================================================ -->
+<script>
+  window.firebaseConfig = {
+    apiKey: "AIzaSyCPF-zYLgM9EylkbTWXKscr-OCW6PdERMo",
+    authDomain: "vodafone-c5666.firebaseapp.com",
+    databaseURL: "https://vodafone-c5666-default-rtdb.europe-west1.firebasedatabase.app",
+    projectId: "vodafone-c5666",
+    storageBucket: "vodafone-c5666.firebasestorage.app",
+    messagingSenderId: "607941813147",
+    appId: "1:607941813147:web:dbc6c580f221c67706773e"
+  };
+  // خليه false دلوقتي للتجربة السريعة. بعد ما تفعّل تسجيل الدخول (Email/Password) خليه true.
+  window.USE_LOGIN = false;
 </script>
 
 <script>
@@ -396,14 +280,10 @@ const AR_MONTHS = ["يناير","فبراير","مارس","أبريل","مايو
 let DB = {
   customers: [],
   tx: [],
-  graves: [],                       // سجلات محذوفة لازم تتبلّغ للفروع التانية
-  dirty: { c:{}, x:{} },            // اللي اتغيّر ولسه مارفعش
-  settings: { reportDay: 8, generateOnDueDate: false, shopName: "حساب فودافون", currency: "ج.م" },
-  sync: { url:"", key:"", branch:"", device:"", lastSync:0, lastOkAt:0, lastErr:"" },
+  settings: { reportDay: 8, generateOnDueDate: false, chargeMode: "auto", shopName: "حساب فودافون", currency: "ج.م" },
   meta: { created: new Date().toISOString() }
 };
-let UI = { tab:"customers", q:"", reportMonth:monthKey(new Date()), filter:"all", open:{}, invCustomer:"", invMonth:monthKey(new Date()) };
-let CAN_SAVE = true;
+let UI = { tab:"customers", q:"", reportMonth:monthKey(new Date()), filter:"all", open:{}, invCustomer:"", invMonth:monthKey(new Date()), renewMonth:monthKey(new Date()), renewSel:{} };
 
 /* ---------- helpers ---------- */
 const $ = s => document.querySelector(s);
@@ -440,43 +320,73 @@ function parseDateLoose(v){
 }
 function parseNum(v){ const n = parseFloat(digits(String(v??"")).replace(/[^\d.\-]/g,"")); return isNaN(n)?0:n; }
 
-/* ---------- storage ---------- */
-const LOCAL = (()=>{ try{ localStorage.setItem("__t","1"); localStorage.removeItem("__t"); return localStorage; }catch(e){ return null; } })();
-function applyLoaded(d){
-  DB.customers = d.customers||[];
-  DB.tx        = d.tx||[];
-  DB.graves    = d.graves||[];
-  DB.dirty     = d.dirty||{c:{},x:{}};
-  DB.settings  = Object.assign(DB.settings, d.settings||{});
-  DB.sync      = Object.assign(DB.sync, d.sync||{});
+/* ---------- storage: Firebase (سحابة) + localStorage (احتياطي) ---------- */
+const firebaseConfig = window.firebaseConfig || {};
+const USE_LOGIN = !!window.USE_LOGIN;
+let CLOUD = false;        // متصل بـ Firebase؟
+let cloudReady = false;   // تم التحميل الأول؟
+let dbref = null;
+let saveT = null;
+let ignoreNext = false;   // لتجاهل صدى الكتابة الخاصة بنا
+
+function isConfigured(){ return !!(firebaseConfig.apiKey && firebaseConfig.databaseURL && window.firebase); }
+function toArr(v){ return Array.isArray(v) ? v : (v && typeof v==="object" ? Object.values(v) : []); }
+function mergeDB(d){
+  d = d || {};
+  DB = Object.assign({customers:[],tx:[],settings:{},meta:{created:new Date().toISOString()}}, d);
+  DB.customers = toArr(DB.customers);
+  DB.tx = toArr(DB.tx);
+  DB.customers.forEach(c=>{ c.lines = toArr(c.lines); c.lines.forEach(l=>{ if(l.addons!=null) l.addons = toArr(l.addons); }); });
+  DB.settings = Object.assign({reportDay:8,generateOnDueDate:false,chargeMode:"auto",shopName:"حساب فودافون",currency:"ج.م"}, d.settings||{});
 }
+function setStatus(state, extra){
+  const b = $("#storeWarn"); if(!b) return;
+  if(state==="cloud"){ b.style.display="none"; }
+  else if(state==="local"){ b.style.display="block"; b.style.background="#FFF3DF"; b.style.borderColor="#F0D9AE";
+    b.innerHTML = "التطبيق شغّال بالتخزين المحلي على الجهاز ده فقط (مفيش إعدادات Firebase). البيانات مش بتتزامن مع أجهزة تانية."; }
+  else if(state==="error"){ b.style.display="block"; b.style.background="#FFECEC"; b.style.borderColor="#F5C6C6";
+    b.innerHTML = "تعذّر الاتصال بالسحابة"+(extra?" — "+esc(extra):"")+". اتأكد من إعدادات Firebase وقواعد قاعدة البيانات."; }
+}
+
+/* التحميل الأولي (يُستدعى مرة واحدة) */
 async function load(){
-  let got=false;
-  if(window.storage){
-    try{ const r = await window.storage.get(KEY); if(r&&r.value){ applyLoaded(JSON.parse(r.value)); got=true; } }catch(e){}
+  if(isConfigured()){
+    try{
+      try{ firebase.initializeApp(firebaseConfig); }catch(e){/* مهيّأ بالفعل */}
+      CLOUD = true;
+      return; // الربط الفعلي بيتم في boot() بعد التأكد من تسجيل الدخول
+    }catch(e){ CLOUD=false; }
   }
-  if(!got && LOCAL){
-    try{ const v = LOCAL.getItem(KEY); if(v){ applyLoaded(JSON.parse(v)); got=true; } }catch(e){}
-  }
-  CAN_SAVE = !!(window.storage || LOCAL);
-  if(!DB.sync.device) DB.sync.device = uid();
+  // احتياطي: تخزين محلي على نفس الجهاز
+  CLOUD = false;
+  try{ const s = localStorage.getItem(KEY); if(s) mergeDB(JSON.parse(s)); }catch(e){}
 }
-let saveT=null;
+
+/* الاشتراك اللحظي في بيانات السحابة */
+function bindCloud(onFirst){
+  dbref = firebase.database().ref("data");
+  dbref.on("value", snap=>{
+    if(ignoreNext){ ignoreNext=false; if(!cloudReady){ cloudReady=true; onFirst&&onFirst(); } return; }
+    const val = snap.val();
+    if(val) mergeDB(val);
+    if(!cloudReady){ cloudReady=true; onFirst&&onFirst(); }
+    else { ensureInvoices(); render(); }
+  }, err=>{ setStatus("error", err&&err.message); });
+}
+
 function save(){
   clearTimeout(saveT);
-  saveT = setTimeout(()=>{
-    const s = JSON.stringify(DB); let ok=false;
-    if(window.storage){ try{ const p=window.storage.set(KEY,s); if(p&&p.catch) p.catch(()=>{}); ok=true; }catch(e){} }
-    if(LOCAL){ try{ LOCAL.setItem(KEY,s); ok=true; }catch(e){} }
-    CAN_SAVE = ok;
-    if(!ok) $("#storeWarn").style.display="block";
-  },250);
-  scheduleSync();
+  if(CLOUD){
+    if(!cloudReady) return;
+    saveT = setTimeout(()=>{
+      ignoreNext = true;
+      const payload = JSON.parse(JSON.stringify(DB)); // يشيل أي undefined
+      dbref.set(payload).then(()=>setStatus("cloud")).catch(err=>{ ignoreNext=false; setStatus("error", err&&err.message); });
+    }, 400);
+  }else{
+    saveT = setTimeout(()=>{ try{ localStorage.setItem(KEY, JSON.stringify(DB)); }catch(e){} }, 250);
+  }
 }
-/* وسم السجل كـ«اتغيّر» عشان يترفع في المزامنة الجاية */
-function touchC(c){ c.updatedAt = Date.now(); DB.dirty.c[c.id]=1; }
-function touchX(t){ t.updatedAt = Date.now(); if(!t.branch) t.branch = DB.sync.branch||""; DB.dirty.x[t.id]=1; }
-function bury(type, id){ DB.graves.push({t:type, id, updatedAt:Date.now()}); if(type==="c") delete DB.dirty.c[id]; else delete DB.dirty.x[id]; }
 
 /* ---------- data model ---------- */
 function customerById(id){ return DB.customers.find(c=>c.id===id); }
@@ -485,6 +395,7 @@ function findLine(lineId){ for(const c of DB.customers){ const l=c.lines.find(x=
 
 /* توليد الفواتير الشهرية تلقائيًا لكل خط من تاريخ استحقاقه حتى الشهر الحالي */
 function ensureInvoices(){
+  if(DB.settings.chargeMode==="manual") return 0; // الفوترة يدوية عبر «تجديد الباقات»
   const nowMk = monthKey(new Date());
   const today = todayISO();
   let added = 0;
@@ -501,10 +412,7 @@ function ensureInvoices(){
         const due = dueDateOf(mk, day);
         // الشهر الأول يبدأ من تاريخ العرض؛ والشهر الحالي: إمّا أول الشهر أو يوم الاستحقاق حسب الإعداد
         if(mk===nowMk && DB.settings.generateOnDueDate && due>today) return;
-        const iid = "inv_"+l.id+"_"+mk;                       // رقم ثابت: نفس الفاتورة في كل الفروع
-        if(DB.graves.some(g=>g.id===iid)) { have.add(key); return; }
-        const t = { id:iid, kind:"invoice", customerId:c.id, lineId:l.id, amount:Number(l.monthly)||0, date:due, period:mk, note:"فاتورة شهر "+monthLabel(mk) };
-        touchX(t); DB.tx.push(t);
+        DB.tx.push({ id:uid(), kind:"invoice", customerId:c.id, lineId:l.id, amount:Number(l.monthly)||0, date:due, period:mk, note:"فاتورة شهر "+monthLabel(mk) });
         have.add(key); added++;
       });
     });
@@ -552,16 +460,49 @@ function payCustomer(cid, amount, date, note){
     const bal = lineBalance(l.id);
     if(bal<=0.009) continue;
     const pay = Math.min(bal,left);
-    const t = {id:uid(),kind:"payment",customerId:cid,lineId:l.id,amount:pay,date,period:String(date).slice(0,7),note:note||"دفعة"};
-    touchX(t); DB.tx.push(t);
+    DB.tx.push({id:uid(),kind:"payment",customerId:cid,lineId:l.id,amount:pay,date,period:String(date).slice(0,7),note:note||"دفعة"});
     left -= pay;
   }
   if(left>0.009 && ordered.length){ // دفع مقدم / زيادة
     const l = ordered[0];
-    const t = {id:uid(),kind:"payment",customerId:cid,lineId:l.id,amount:left,date,period:String(date).slice(0,7),note:(note?note+" — ":"")+"دفع مقدّم"};
-    touchX(t); DB.tx.push(t);
+    DB.tx.push({id:uid(),kind:"payment",customerId:cid,lineId:l.id,amount:left,date,period:String(date).slice(0,7),note:(note?note+" — ":"")+"دفع مقدّم"});
   }
   save(); return amount;
+}
+
+/* ============================================================
+   تجديد الباقة — عملية مستقلة مربوطة بحساب العميل
+   القاعدة: سعر الباقة والإضافات بيتسجّلوا وقت التجديد (لقطة ثابتة)،
+   حتى لو اتغيّر سعر الباقة بعد كده — التجديدات القديمة ما بتتأثرش.
+   ============================================================ */
+function addonsOf(l){ return Array.isArray(l.addons)?l.addons:[]; }
+function addonsSum(l){ return Math.round(addonsOf(l).reduce((s,a)=>s+(Number(a.amount)||0),0)*100)/100; }
+function pkgPrice(l){ return Number(l.monthly)||0; }
+function renewCharge(l){ return Math.round((pkgPrice(l)+addonsSum(l))*100)/100; }   // قيمة التجديد الجديدة (باقة + إضافات)
+function hasChargeInPeriod(lineId, mk){ return DB.tx.some(t=>t.kind!=="payment" && t.lineId===lineId && t.period===mk); }
+function renewalOfPeriod(lineId, mk){ return DB.tx.find(t=>t.kind==="renewal" && t.lineId===lineId && t.period===mk); }
+function renewDate(l, mk){
+  const day = l.startDate ? (Number(String(l.startDate).slice(8,10))||1) : 1;
+  return (mk===monthKey(new Date())) ? todayISO() : dueDateOf(mk, day);
+}
+/* ينشئ تجديدًا واحدًا لخط في شهر معيّن — يتجاهل لو الشهر متسجّل له فاتورة/تجديد بالفعل (منعًا للتكرار) */
+function renewLine(lineId, mk){
+  const f = findLine(lineId); if(!f) return null;
+  const {c,l} = f;
+  if(hasChargeInPeriod(l.id, mk)) return null;
+  const adds = addonsOf(l).map(a=>({name:(a.name||"إضافة"), amount:Number(a.amount)||0})).filter(a=>a.amount||a.name);
+  const pkg  = pkgPrice(l);
+  const amount = Math.round((pkg + adds.reduce((s,a)=>s+a.amount,0))*100)/100;
+  const note = "تجديد باقة " + monthLabel(mk) + (adds.length ? " — إضافات: " + adds.map(a=>`${a.name} ${money(a.amount)}`).join("، ") : "");
+  const tx = { id:uid(), kind:"renewal", customerId:c.id, lineId:l.id, amount, date:renewDate(l,mk), period:mk, packagePrice:pkg, addons:adds, note };
+  DB.tx.push(tx);
+  return tx;
+}
+/* الخطوط المؤهّلة للتجديد في شهر معيّن حسب نتيجة البحث الحالية */
+function renewEligibleLines(mk){
+  const out=[];
+  searchCustomers(UI.q).forEach(c=>c.lines.forEach(l=>{ if(!l.stopped && !hasChargeInPeriod(l.id,mk)) out.push({c,l}); }));
+  return out;
 }
 
 /* ---------- search ---------- */
@@ -591,6 +532,7 @@ function render(){
   const v = $("#view");
   document.querySelectorAll(".tab").forEach(t=>t.classList.toggle("on", t.dataset.tab===UI.tab));
   if(UI.tab==="customers") v.innerHTML = viewCustomers();
+  else if(UI.tab==="renew") v.innerHTML = viewRenew();
   else if(UI.tab==="collect") v.innerHTML = viewCollect();
   else if(UI.tab==="reports") v.innerHTML = viewReports();
   else if(UI.tab==="invoice") v.innerHTML = viewInvoice();
@@ -696,6 +638,114 @@ function viewCustomers(){
   return html + "</div>";
 }
 
+/* ---------- تجديد الباقات ---------- */
+function viewRenew(){
+  const mk = UI.renewMonth;
+  const list = searchCustomers(UI.q);
+
+  // شهور متاحة للاختيار (من أقدم استحقاق للشهر الجاي)
+  const startMk = (()=>{ const ds=DB.customers.flatMap(c=>c.lines.map(l=>l.startDate)).filter(Boolean).sort(); return ds.length?monthKey(ds[0]):monthKey(new Date()); })();
+  const next = (()=>{ const d=new Date(); d.setMonth(d.getMonth()+1); return monthKey(d); })();
+  const months = monthsFrom(startMk, next).reverse();
+
+  // أرقام مجمّعة للـ KPIs
+  let eligibleCount=0, renewedCount=0, eligibleTotal=0;
+  list.forEach(c=>c.lines.forEach(l=>{
+    if(l.stopped) return;
+    if(hasChargeInPeriod(l.id,mk)){ renewedCount++; }
+    else { eligibleCount++; eligibleTotal += renewCharge(l); }
+  }));
+
+  // إجماليات المحدَّد
+  const selIds = Object.keys(UI.renewSel).filter(id=>UI.renewSel[id]);
+  let selCount=0, selNew=0, selTotal=0;
+  selIds.forEach(id=>{ const f=findLine(id); if(!f||hasChargeInPeriod(id,mk)) return; selCount++; selNew+=renewCharge(f.l); selTotal+=lineBalance(id)+renewCharge(f.l); });
+
+  const cur = esc(DB.settings.currency);
+
+  let html = `
+  <div class="kpis">
+    <div class="kpi"><span>خطوط قابلة للتجديد — ${monthLabel(mk)}</span><b class="num">${eligibleCount}</b></div>
+    <div class="kpi green"><span>مُجدّدة بالفعل هذا الشهر</span><b class="num">${renewedCount}</b></div>
+    <div class="kpi red"><span>إجمالي التجديد لو جدّدت الكل</span><b><span class="num">${money(eligibleTotal)}</span> ${cur}</b></div>
+    <div class="kpi amber"><span>محدَّد الآن</span><b class="num">${selCount}</b></div>
+  </div>`;
+
+  html += `
+  <div class="card" style="margin-bottom:16px"><div class="card-b">
+    <div class="row" style="justify-content:space-between">
+      <div class="grow" style="max-width:240px"><label>شهر التجديد</label>
+        <select id="renewMonth">${months.map(m=>`<option value="${m}" ${m===mk?"selected":""}>${monthLabel(m)}</option>`).join("")}</select></div>
+      <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap">
+        <button class="btn sm" data-act="renewSelectAll">تحديد كل المؤهّل</button>
+        <button class="btn sm" data-act="renewSelectNone">إلغاء التحديد</button>
+      </div>
+    </div>
+    <p class="tiny muted" style="margin-bottom:0">
+      اختر الخطوط ثم اضغط «تجديد الباقات المحددة». سعر الباقة والإضافات بيتسجّلوا وقت التجديد،
+      والإجمالي = <b>الباقة + الإضافات + الحساب السابق</b>. بعد التجديد بتقدر تسجّل السداد على طول.
+      ${DB.settings.chargeMode!=="manual"?`<br><b style="color:var(--amber)">ملاحظة:</b> الفاتورة التلقائية شغّالة. لو عايز التجديد يكون الطريقة الوحيدة لإضافة الفواتير، فعّل «الفوترة اليدوية» من الإعدادات.`:``}
+    </p>
+  </div></div>`;
+
+  if(!list.length){
+    return html + `<div class="card"><div class="empty"><b>مفيش عملاء</b>أضف عميلًا أولًا من تبويب «العملاء والخطوط».</div></div>`;
+  }
+
+  html += `<div class="tbl-wrap card" style="padding:0"><table><thead><tr>
+    <th style="width:34px"></th><th>الخط</th><th class="n">سعر الباقة</th><th class="n">الإضافات</th>
+    <th class="n">الحساب السابق</th><th class="n">الإجمالي المطلوب</th><th>الحالة</th>
+  </tr></thead><tbody>`;
+
+  list.forEach(c=>{
+    const eligLines = c.lines.filter(l=>!l.stopped && !hasChargeInPeriod(l.id,mk));
+    const allSel = eligLines.length>0 && eligLines.every(l=>UI.renewSel[l.id]);
+    html += `<tr style="background:var(--shell)">
+      <td>${eligLines.length?`<input type="checkbox" class="renew-cust" data-cid="${c.id}" ${allSel?"checked":""} title="تحديد كل خطوط العميل">`:""}</td>
+      <td colspan="6"><b>${esc(c.name)}</b> <span class="tiny muted">· <span class="num">${c.lines.length}</span> خط · رصيد حالي <b class="num" style="color:${customerBalance(c.id)>0.009?"var(--red)":"var(--green)"}">${money(customerBalance(c.id))}</b> ${cur}</span></td>
+    </tr>`;
+
+    c.lines.forEach(l=>{
+      const pkg = pkgPrice(l), add = addonsSum(l), prev = lineBalance(l.id);
+      const addList = addonsOf(l);
+      const charged = hasChargeInPeriod(l.id, mk);
+      const rnw = renewalOfPeriod(l.id, mk);
+      const total = prev + renewCharge(l);
+      const checked = !!UI.renewSel[l.id];
+      const addCell = add>0
+        ? `<b class="num">${money(add)}</b>${addList.length?`<br><span class="tiny muted">${addList.map(a=>esc(a.name)+" "+money(a.amount)).join(" · ")}</span>`:""}`
+        : `<span class="tiny muted">—</span>`;
+      html += `<tr class="${l.stopped?"":""}">
+        <td>${(l.stopped)?`<span class="tiny muted">موقوف</span>`:charged?"":`<input type="checkbox" class="renew-cb" data-line="${l.id}" data-cid="${c.id}" ${checked?"checked":""}>`}</td>
+        <td><b class="num">${esc(l.number||"—")}</b> <span class="badge ${l.type==="تحويل"?"b-tr":"b-new"}">${esc(l.type||"جديد")}</span>
+            <div style="margin-top:6px"><button class="btn sm" data-act="editAddons" data-line="${l.id}">تعديل الإضافات</button></div></td>
+        <td class="n num">${money(pkg)}</td>
+        <td class="n">${addCell}</td>
+        <td class="n num" style="color:${prev>0.009?"var(--red)":prev<-0.009?"var(--green)":"var(--ink-3)"}">${money(prev)}</td>
+        <td class="n num" style="font-weight:800;color:var(--ink)">${charged?money(prev):money(total)}</td>
+        <td>${charged
+              ? `<span class="badge b-paid">مُجدّدة</span>${rnw?`<br><span class="tiny muted">بـ <span class="num">${money(rnw.amount)}</span></span>`:""}`
+              : `<span class="badge b-gray">جاهزة للتجديد</span>`}</td>
+      </tr>`;
+    });
+  });
+  html += `</tbody></table></div>`;
+
+  // شريط الإجراء السفلي
+  html += `
+  <div class="card noprint" style="margin-top:16px;position:sticky;bottom:0"><div class="card-b">
+    <div class="row" style="justify-content:space-between;align-items:center">
+      <div>
+        <div class="tiny muted">محدَّد <b class="num">${selCount}</b> خط · تجديد جديد <b class="num" style="color:var(--red)">${money(selNew)}</b> ${cur}</div>
+        <div style="font-family:var(--display);font-weight:900;font-size:20px">الإجمالي المطلوب سداده: <span class="num">${money(selTotal)}</span> ${cur}</div>
+      </div>
+      <button class="btn primary" data-act="renewReview" ${selCount?"":"disabled style=\"opacity:.5;cursor:not-allowed\""}>تجديد الباقات المحددة</button>
+    </div>
+  </div></div>`;
+
+  return html;
+}
+
 /* ---------- 2) التحصيل ---------- */
 function viewCollect(){
   const list = searchCustomers(UI.q);
@@ -729,7 +779,7 @@ function viewCollect(){
   <div class="card"><div class="card-h"><h3>آخر الدفعات</h3></div><div class="card-b" style="padding:0">`;
   if(!recent.length) html += `<div class="empty">لسه مفيش دفعات مسجّلة.</div>`;
   else{
-    html += `<div class="tbl-wrap"><table><thead><tr><th>التاريخ</th><th>العميل</th><th>الخط</th><th class="n">المبلغ</th><th>الجهاز</th><th>ملاحظة</th><th></th></tr></thead><tbody>`;
+    html += `<div class="tbl-wrap"><table><thead><tr><th>التاريخ</th><th>العميل</th><th>الخط</th><th class="n">المبلغ</th><th>ملاحظة</th><th></th></tr></thead><tbody>`;
     recent.forEach(t=>{
       const c = customerById(t.customerId); const fl = findLine(t.lineId);
       html += `<tr>
@@ -737,7 +787,6 @@ function viewCollect(){
         <td>${esc(c?c.name:"—")}</td>
         <td class="num tiny">${esc(fl?fl.l.number:"—")}</td>
         <td class="n num" style="color:var(--green);font-weight:700">${money(t.amount)}</td>
-        <td class="tiny">${t.branch?`<span class="badge b-gray">${esc(t.branch)}</span>`:"—"}</td>
         <td class="tiny muted">${esc(t.note||"")}</td>
         <td><button class="btn sm danger" data-act="delTx" data-tx="${t.id}">تراجع</button></td>
       </tr>`;
@@ -794,7 +843,6 @@ function viewReports(){
     <div class="kpi red"><span>إجمالي المديونية المتراكمة</span><b><span class="num">${money(T.b)}</span></b></div>
   </div>
 
-  ${branchCard(mk, T.p)}
   <div class="card"><div class="card-h">
     <h3>تقرير ${monthLabel(mk)} — مين دفع ومين لأ</h3>
     <span class="tiny muted"><span class="num">${shown.length}</span> عميل</span>
@@ -828,20 +876,6 @@ function viewReports(){
     <div id="lineResult" style="margin-top:14px">${UI.lineQ?lineLookupHtml(UI.lineQ):""}</div>
   </div></div>`;
   return html;
-}
-function branchCard(mk, totalPaid){
-  const by = {};
-  DB.tx.filter(t=>t.kind==="payment" && String(t.date).slice(0,7)===mk)
-       .forEach(t=>{ const b=t.branch||"غير محدد"; by[b]=(by[b]||0)+t.amount; });
-  const names = Object.keys(by);
-  if(names.length<2) return "";
-  return `<div class="card" style="margin-bottom:16px"><div class="card-h"><h3>التحصيل حسب الجهاز — ${monthLabel(mk)}</h3></div>
-    <div class="card-b" style="padding:0"><div class="tbl-wrap"><table>
-    <thead><tr><th>الجهاز</th><th class="n">المحصّل</th><th class="n">النسبة</th></tr></thead><tbody>
-    ${names.sort((a,b)=>by[b]-by[a]).map(b=>`<tr><td><b>${esc(b)}</b></td>
-      <td class="n num" style="color:var(--green);font-weight:700">${money(by[b])}</td>
-      <td class="n num">${totalPaid?Math.round(by[b]/totalPaid*100):0}%</td></tr>`).join("")}
-    </tbody></table></div></div></div>`;
 }
 function lineLookupHtml(q){
   const qq = digits(q).replace(/\D/g,"");
@@ -923,46 +957,7 @@ function invoiceHtml(cid, mk){
 
 /* ---------- 5) البيانات ---------- */
 function viewData(){
-  const s = DB.sync, st = syncState();
-  const syncCard = GAS ? `
-  <div class="card" style="margin-bottom:16px"><div class="card-h"><h3>المزامنة مع حساب جوجل</h3>
-    <span class="badge b-paid">مربوط ✓</span></div><div class="card-b">
-    <p style="margin-top:0">التطبيق شغّال جوّه حساب جوجل بتاعك${s.user?` (<b dir="ltr">${esc(s.user)}</b>)`:""}،
-      وكل حاجة بتتسجل بتترفع تلقائيًا على الشيت في درايفك.
-      افتح نفس اللينك من أي جهاز وسجّل دخول بنفس الحساب — هتلاقي كل البيانات مكانها.</p>
-    <div class="row">
-      <div class="grow"><label>اسم الجهاز ده (اختياري)</label>
-        <input type="text" id="syBranch" value="${esc(s.branch||"")}" placeholder="مثال: موبايلي / الكمبيوتر"></div>
-      <div><button class="btn primary" data-act="saveSync">حفظ</button></div>
-      <div><button class="btn dark" data-act="syncNow">مزامنة الآن</button></div>
-      <div><button class="btn" data-act="testSync">اختبار الاتصال</button></div>
-    </div>
-    <p class="tiny muted" style="margin-bottom:0">الحالة: ${st.t} · في الانتظار: <span class="num">${pendingCount()}</span> تغيير${s.lastErr?` · آخر خطأ: ${esc(s.lastErr)}`:""}
-      <br>اسم الجهاز بيتسجّل مع كل تحصيل، يفيدك تعرف الحركة اتعملت من فين.</p>
-  </div></div>` : `
-  <div class="card" style="margin-bottom:16px"><div class="card-h"><h3>المزامنة بين أجهزتك</h3>
-    <span class="tiny muted">${DB.sync.url?`الحالة: ${st.t}`:"مش مفعّلة"}</span></div><div class="card-b">
-    <p class="tiny muted" style="margin-top:0">أفضل طريقة: تحط التطبيق جوّه حساب جوجل بتاعك، ساعتها بيشتغل بتسجيل الدخول من غير أي رابط أو كلمة سر. اضغط «دليل الإعداد».
-      والخانات دي للطريقة التانية (التطبيق مرفوع بره وبيكلّم جوجل عن طريق رابط).</p>
-    <div class="row">
-      <div class="grow" style="flex-basis:100%"><label>رابط المزامنة (Google Apps Script)</label>
-        <input type="text" id="syUrl" value="${esc(s.url||"")}" placeholder="https://script.google.com/macros/s/…/exec" dir="ltr"></div>
-      <div class="grow"><label>كلمة السر</label><input type="text" id="syKey" value="${esc(s.key||"")}" dir="ltr" placeholder="نفس اللي في السكريبت"></div>
-      <div class="grow"><label>اسم الجهاز</label><input type="text" id="syBranch" value="${esc(s.branch||"")}" placeholder="مثال: موبايلي"></div>
-    </div>
-    <div class="row" style="margin-top:10px">
-      <button class="btn primary" data-act="saveSync">حفظ إعدادات المزامنة</button>
-      <button class="btn dark" data-act="syncNow">مزامنة الآن</button>
-      <button class="btn" data-act="testSync">اختبار الاتصال</button>
-      <button class="btn ghost" data-act="guide">دليل الإعداد خطوة بخطوة</button>
-    </div>
-    <p class="tiny muted" style="margin-bottom:0">
-      ${DB.sync.url
-        ? `آخر مزامنة ناجحة ${s.lastOkAt?timeAgo(s.lastOkAt):"لسه ولا مرة"} · في الانتظار: <span class="num">${pendingCount()}</span> تغيير${s.lastErr?` · آخر خطأ: ${esc(s.lastErr)}`:""}`
-        : `من غير مزامنة، كل جهاز شغّال لوحده والبيانات محفوظة على الجهاز ده بس.`}
-    </p>
-  </div></div>`;
-  return syncCard + `
+  return `
   <div class="card" style="margin-bottom:16px"><div class="card-h"><h3>استيراد الشيت</h3></div><div class="card-b">
     <p class="tiny muted" style="margin-top:0">انسخ الأعمدة من Excel والصقها هنا (سطر لكل خط). ترتيب الأعمدة:
       <b>اسم العميل | رقم الخط | نوع الخط | تاريخ الاستحقاق | قيمة الفاتورة</b>.
@@ -976,22 +971,21 @@ function viewData(){
     </div>
   </div></div>
 
-  <div class="card" style="margin-bottom:16px"><div class="card-h"><h3>نسخة احتياطية واستعادة</h3>
-    <span class="tiny muted">عندك <span class="num">${DB.customers.length}</span> عميل · <span class="num">${allLines().length}</span> خط · <span class="num">${DB.tx.length}</span> حركة</span></div><div class="card-b">
-    <div class="row" style="margin-bottom:12px">
+  <div class="card" style="margin-bottom:16px"><div class="card-h"><h3>حالة السحابة</h3></div><div class="card-b">
+    <p class="tiny" style="margin-top:0">${CLOUD
+      ? `<b style="color:var(--green)">متصل بـ Firebase</b> — البيانات بتتحفظ على السحابة وبتتزامن لحظيًا بين كل الأجهزة.`
+      : `<b style="color:var(--amber)">تخزين محلي</b> — على الجهاز ده فقط. لتفعيل السحابة اكتب إعدادات Firebase في أول الملف.`}</p>
+    ${(CLOUD && USE_LOGIN) ? `<button class="btn" data-act="doLogout">تسجيل الخروج</button>` : ``}
+  </div></div>
+
+  <div class="card" style="margin-bottom:16px"><div class="card-h"><h3>نسخة احتياطية وتصدير</h3></div><div class="card-b">
+    <div class="row">
       <button class="btn dark" data-act="backup">تنزيل نسخة احتياطية</button>
-      <button class="btn dark" data-act="copyBackup">نسخ النسخة كنص</button>
-      <button class="btn" data-act="restore">استعادة من ملف</button>
+      <button class="btn" data-act="restore">استعادة من نسخة</button>
       <button class="btn" data-act="csvCustomers">تصدير العملاء والخطوط (Excel)</button>
       <button class="btn" data-act="csvTx">تصدير كل الحركات (Excel)</button>
     </div>
-    <label>استعادة بلصق النص</label>
-    <textarea id="restoreText" rows="4" placeholder="الزق هنا محتوى ملف النسخة الاحتياطية (النص اللي بيبدأ بـ { )"></textarea>
-    <div class="row" style="margin-top:9px">
-      <button class="btn primary" data-act="restorePaste">استعادة من النص</button>
-      <span class="tiny muted">الطريقة دي بتشتغل حتى لو ملف التنزيل باظ أو الموبايل مش بيفتح الملفات.</span>
-    </div>
-    <p class="tiny muted" style="margin-bottom:0">${CAN_SAVE?"البيانات بتتحفظ تلقائيًا مع كل تعديل.":"⚠️ الحفظ التلقائي مش شغّال في النافذة دي — خُد نسخة نصية قبل ما تقفل."}</p>
+    <p class="tiny muted" style="margin-bottom:0">${CLOUD?"البيانات بتتحفظ تلقائيًا على السحابة مع كل تعديل.":"البيانات بتتحفظ محليًا على الجهاز ده — نزّل نسخة احتياطية بين الحين والتاني."}</p>
   </div></div>
 
   <div class="card" style="margin-bottom:16px"><div class="card-h"><h3>الإعدادات</h3></div><div class="card-b"><div class="row">
@@ -1001,6 +995,10 @@ function viewData(){
     <div class="grow"><label>توليد الفاتورة</label><select id="setGen">
       <option value="0" ${!DB.settings.generateOnDueDate?"selected":""}>أول الشهر (الافتراضي)</option>
       <option value="1" ${DB.settings.generateOnDueDate?"selected":""}>يوم الاستحقاق نفسه</option>
+    </select></div>
+    <div class="grow"><label>طريقة إضافة الفاتورة الشهرية</label><select id="setMode">
+      <option value="auto" ${DB.settings.chargeMode!=="manual"?"selected":""}>تلقائي — فاتورة كل شهر</option>
+      <option value="manual" ${DB.settings.chargeMode==="manual"?"selected":""}>يدوي — بالتجديد فقط</option>
     </select></div>
     <div><button class="btn primary" data-act="saveSettings">حفظ</button></div>
   </div></div></div>
@@ -1018,43 +1016,29 @@ function openModal(html){ $("#modal").innerHTML = html; $("#overlay").classList.
 function closeModal(){ $("#overlay").classList.remove("on"); $("#modal").innerHTML=""; }
 
 function lineRow(l, i){
-  l = l || {id:uid(), number:"", type:"جديد", startDate:todayISO(), monthly:""};
+  l = l || {id:uid(), number:"", type:"جديد", startDate:todayISO(), monthly:"", addons:[]};
+  const addons = Array.isArray(l.addons)?l.addons:[];
   return `<div class="lrow" data-lrow="${l.id}">
     <div><label>رقم الخط ${i+1}</label><input type="text" class="f-num" value="${esc(l.number||"")}" placeholder="01xxxxxxxxx" inputmode="numeric"></div>
     <div><label>النوع</label><select class="f-type">
       <option ${l.type!=="تحويل"?"selected":""}>جديد</option><option ${l.type==="تحويل"?"selected":""}>تحويل</option></select></div>
     <div><label>تاريخ الاستحقاق (العرض)</label><input type="date" class="f-date" value="${esc(l.startDate||todayISO())}"></div>
-    <div><label>الفاتورة الشهرية</label><input type="number" class="f-amt" value="${l.monthly??""}" min="0" step="0.5" placeholder="0"></div>
+    <div><label>سعر الباقة (شهري)</label><input type="number" class="f-amt" value="${l.monthly??""}" min="0" step="0.5" placeholder="0"></div>
     <div><button class="btn sm danger" data-act="rmLine">حذف</button></div>
+    <div class="ao-inline" style="grid-column:1/-1;border-top:1px dashed var(--line);padding-top:8px;margin-top:2px">
+      <label style="margin-bottom:6px">إضافات الخط (اختياري) — بتتحسب مع الباقة عند التجديد</label>
+      <div class="ao-list">${addons.map(a=>lineAddonRow(a)).join("")}</div>
+      <button class="btn sm" data-act="lineAoAdd" style="margin-top:4px">+ إضافة</button>
+    </div>
   </div>`;
 }
-function guideModal(){
-  const code = document.getElementById("gsCode").textContent.trim();
-  openModal(`
-    <div class="modal-h"><h3>تحطّ التطبيق في حساب جوجل بتاعك — مرة واحدة</h3><button class="x" data-act="close">×</button></div>
-    <div class="modal-b">
-      <p class="tiny muted" style="margin-top:0">بعدها: تفتح لينك واحد من أي جهاز، تسجّل دخول بحسابك، وتلاقي كل البيانات. من غير روابط أو كلمات سر تكتبها كل مرة.</p>
-      <ol class="steps">
-        <li><b>اعمل شيت جديد</b><p>من الكمبيوتر افتح <span dir="ltr">sheets.new</span> بحسابك في جوجل وسمّيه «قاعدة بيانات حساب فودافون». سيبه فاضي — التطبيق هيعمل التبويبات بنفسه.</p></li>
-        <li><b>افتح محرر الأكواد</b><p>من الشيت: <b>Extensions ← Apps Script</b>. امسح أي كود موجود في ملف <span dir="ltr">Code.gs</span>.</p></li>
-        <li><b>الزق كود السيرفر</b><p>اضغط «نسخ كود السيرفر» تحت والزقه مكان الكود اللي مسحته. احفظ (أيقونة الفلوبي).</p></li>
-        <li><b>ضيف ملف التطبيق</b><p>جنب كلمة Files اضغط <b>+</b> ← <b>HTML</b> ← سمّي الملف <b dir="ltr">index</b> بالظبط. امسح اللي جوّاه، وافتح ملف <span dir="ltr">hesab-vodafone.html</span> بمحرر نصوص، حدّد الكل، انسخ، والزق هنا. احفظ.</p></li>
-        <li><b>انشره</b><p><b>Deploy ← New deployment ← Web app</b>، وحط:<br>
-          Execute as: <b>Me</b><br>
-          Who has access: <b>Only myself</b> (يعني انت بس اللي بتفتحه)<br>
-          اضغط Deploy ووافق على الصلاحيات (لو ظهرت شاشة تحذير: Advanced ← Go to… ← Allow — ده مشروعك انت).</p></li>
-        <li><b>افتح اللينك على أجهزتك</b><p>هيديك رابط بينتهي بـ <span dir="ltr">/exec</span>. افتحه على الموبايل والكمبيوتر، سجّل دخول بنفس حساب جوجل، وضيفه للشاشة الرئيسية:<br>
-          أندرويد: كروم ← النقط الثلاثة ← «إضافة إلى الشاشة الرئيسية».<br>
-          آيفون: سفاري ← زرار المشاركة ← «إضافة إلى الشاشة الرئيسية».</p></li>
-        <li><b>لو عدّلت الكود بعدين</b><p>لازم <b>Deploy ← Manage deployments ← تعديل النسخة الحالية ← Version: New version</b>، مش مجرد حفظ.</p></li>
-      </ol>
-      <label style="margin-top:16px">كود السيرفر (ملف Code.gs)</label>
-      <textarea id="gsBox" rows="8" readonly dir="ltr" style="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px">${esc(code)}</textarea>
-    </div>
-    <div class="modal-f">
-      <button class="btn primary" data-act="copyGs">نسخ كود السيرفر</button>
-      <button class="btn ghost" data-act="close">إغلاق</button>
-    </div>`);
+function lineAddonRow(a){
+  a = a || {name:"", amount:""};
+  return `<div class="lao-row" style="display:grid;grid-template-columns:1fr 130px auto;gap:8px;margin-bottom:6px">
+    <input type="text" class="lao-name" value="${esc(a.name||"")}" placeholder="اسم الإضافة">
+    <input type="number" class="lao-amt" value="${a.amount??""}" min="0" step="0.5" placeholder="القيمة">
+    <button class="btn sm danger" data-act="lineAoRm">حذف</button>
+  </div>`;
 }
 function customerModal(id){
   const c = id ? customerById(id) : null;
@@ -1138,6 +1122,108 @@ function detailModal(cid){
     <div class="modal-f"><button class="btn primary" data-act="payCust" data-id="${c.id}">تحصيل</button><button class="btn ghost" data-act="close">إغلاق</button></div>`);
 }
 
+/* نافذة مراجعة التجديد — تعرض الباقة + الإضافات + الحساب السابق + الإجمالي قبل الإنشاء */
+function renewReviewModal(){
+  const mk = UI.renewMonth, cur = esc(DB.settings.currency);
+  const items = Object.keys(UI.renewSel).filter(id=>UI.renewSel[id])
+    .map(id=>findLine(id)).filter(f=>f && !hasChargeInPeriod(f.l.id,mk));
+  if(!items.length){ toast("مفيش خطوط محددة قابلة للتجديد"); return; }
+
+  let gPkg=0, gAdd=0, gPrev=0, gTot=0;
+  const rows = items.map(({c,l})=>{
+    const pkg=pkgPrice(l), add=addonsSum(l), prev=lineBalance(l.id), tot=prev+pkg+add;
+    gPkg+=pkg; gAdd+=add; gPrev+=prev; gTot+=tot;
+    return `<tr>
+      <td><b>${esc(c.name)}</b><br><span class="tiny muted num">${esc(l.number||"—")}</span></td>
+      <td class="n num">${money(pkg)}</td>
+      <td class="n num">${money(add)}</td>
+      <td class="n num" style="color:${prev>0.009?"var(--red)":"var(--ink-3)"}">${money(prev)}</td>
+      <td class="n num" style="font-weight:800">${money(tot)}</td>
+    </tr>`;
+  }).join("");
+
+  openModal(`
+    <div class="modal-h"><h3>مراجعة تجديد ${monthLabel(mk)}</h3><button class="x" data-act="close">×</button></div>
+    <div class="modal-b" style="padding:0">
+      <div class="tbl-wrap"><table><thead><tr>
+        <th>العميل / الخط</th><th class="n">الباقة</th><th class="n">الإضافات</th><th class="n">الحساب السابق</th><th class="n">الإجمالي</th>
+      </tr></thead><tbody>${rows}</tbody>
+      <tfoot><tr style="font-weight:800;background:var(--shell)">
+        <td>الإجمالي (${items.length} خط)</td>
+        <td class="n num">${money(gPkg)}</td><td class="n num">${money(gAdd)}</td>
+        <td class="n num" style="color:var(--red)">${money(gPrev)}</td>
+        <td class="n num" style="color:var(--red)">${money(gTot)}</td>
+      </tr></tfoot></table></div>
+      <div class="card-b tiny muted">سعر الباقة والإضافات هيتسجّلوا بقيمتهم دلوقتي وما بيتغيّروش بعد كده. الإجمالي بيشمل الحساب السابق المستحق.</div>
+    </div>
+    <div class="modal-f">
+      <button class="btn primary" data-act="doRenew">تأكيد التجديد (<span class="num">${money(gTot)}</span> ${cur})</button>
+      <button class="btn ghost" data-act="close">إلغاء</button>
+    </div>`);
+}
+
+/* بعد إنشاء التجديد: نافذة تسجيل السداد — تخصم المدفوع وتُظهر المتبقّي */
+function renewPayModal(cids){
+  const cur = esc(DB.settings.currency);
+  const custs = [...new Set(cids)].map(customerById).filter(Boolean);
+  if(!custs.length){ closeModal(); render(); return; }
+  const rows = custs.map(c=>{
+    const due = Math.max(0, customerBalance(c.id));
+    return `<div class="lrow" style="align-items:center">
+      <div><b>${esc(c.name)}</b><br><span class="tiny muted">المطلوب: <b class="num">${money(due)}</b> ${cur}</span></div>
+      <div><label>المدفوع الآن</label>
+        <input type="number" class="rpay" data-cid="${c.id}" data-due="${due}" value="${due||""}" min="0" step="0.5" oninput="rpayLive(this)"></div>
+      <div style="min-width:130px"><label>المتبقّي</label>
+        <div class="rrem" data-cid="${c.id}" style="font-family:var(--display);font-weight:800;color:var(--green)">${money(0)} ${cur}</div></div>
+    </div>`;
+  }).join("");
+  openModal(`
+    <div class="modal-h"><h3>تسجيل السداد بعد التجديد</h3><button class="x" data-act="close">×</button></div>
+    <div class="modal-b">
+      <p class="tiny muted" style="margin-top:0">اكتب المدفوع لكل عميل. لو دفع كامل يبقى الحساب «مسدد»، ولو جزء يظهر المتبقّي ويتسجّل في كشف الحساب. تقدر تسيبه صفر وتسجّل بعدين.</p>
+      <div id="renewPayRows">${rows}</div>
+    </div>
+    <div class="modal-f">
+      <button class="btn primary" data-act="doRenewPay">تسجيل السداد</button>
+      <button class="btn ghost" data-act="close">تخطّي — أسجّل بعدين</button>
+    </div>`);
+  // حدّث المتبقّي المبدئي
+  document.querySelectorAll(".rpay").forEach(rpayLive);
+}
+function rpayLive(el){
+  const due = parseNum(el.dataset.due), paid = parseNum(el.value);
+  const rem = Math.max(0, Math.round((due-paid)*100)/100);
+  const box = document.querySelector(`.rrem[data-cid="${el.dataset.cid}"]`);
+  if(box){
+    box.textContent = money(rem) + " " + (DB.settings.currency||"");
+    box.style.color = rem<=0.009 ? "var(--green)" : "var(--amber)";
+  }
+}
+
+/* نافذة تعديل إضافات خط بسرعة من شاشة التجديد */
+function addonsModal(lineId){
+  const f = findLine(lineId); if(!f) return;
+  const {c,l} = f;
+  const list = addonsOf(l);
+  openModal(`
+    <div class="modal-h"><h3>إضافات ${esc(l.number||"")} — ${esc(c.name)}</h3><button class="x" data-act="close">×</button></div>
+    <div class="modal-b">
+      <input type="hidden" id="aoLine" value="${l.id}">
+      <p class="tiny muted" style="margin-top:0">الإضافات دي بتتحسب مع الباقة عند كل تجديد. سعر الباقة الأساسي: <b class="num">${money(pkgPrice(l))}</b> ${esc(DB.settings.currency)}.</p>
+      <div id="aoRows">${(list.length?list:[]).map(a=>addonRow(a)).join("")||`<p class="tiny muted" id="aoEmpty">لا توجد إضافات — اضغط «+ إضافة».</p>`}</div>
+      <button class="btn sm" data-act="aoAdd" style="margin-top:6px">+ إضافة</button>
+    </div>
+    <div class="modal-f"><button class="btn primary" data-act="aoSave">حفظ الإضافات</button><button class="btn ghost" data-act="close">إلغاء</button></div>`);
+}
+function addonRow(a){
+  a = a || {name:"", amount:""};
+  return `<div class="lrow ao-row" style="grid-template-columns:1fr 140px auto">
+    <div><label>اسم الإضافة</label><input type="text" class="ao-name" value="${esc(a.name||"")}" placeholder="مثال: باقة نت"></div>
+    <div><label>القيمة</label><input type="number" class="ao-amt" value="${a.amount??""}" min="0" step="0.5" placeholder="0"></div>
+    <div style="align-self:end"><button class="btn sm danger" data-act="aoRm">حذف</button></div>
+  </div>`;
+}
+
 /* ============================================================
    الأحداث
    ============================================================ */
@@ -1146,6 +1232,8 @@ document.addEventListener("click", e=>{
   const act = t.dataset.act;
 
   if(act==="close"){ closeModal(); return; }
+  if(act==="doLogin"){ doLogin(); return; }
+  if(act==="doLogout"){ doLogout(); return; }
   if(act==="new"){ customerModal(); return; }
   if(act==="goto"){ UI.tab=t.dataset.tab; render(); return; }
   if(act==="toggle"){ const id=t.dataset.id; UI.open[id]=!UI.open[id]; render(); return; }
@@ -1162,12 +1250,12 @@ document.addEventListener("click", e=>{
     if(box.children.length<=1){ toast("لازم خط واحد على الأقل"); return; }
     t.closest(".lrow").remove(); return;
   }
+  if(act==="lineAoAdd"){ t.closest(".lrow").querySelector(".ao-list").insertAdjacentHTML("beforeend", lineAddonRow(null)); return; }
+  if(act==="lineAoRm"){ t.closest(".lao-row").remove(); return; }
   if(act==="saveCust"){ saveCustomer(); return; }
   if(act==="del"){
     const c=customerById(t.dataset.id); if(!c) return;
     if(!confirm(`حذف ${c.name} وكل خطوطه وحركاته؟`)) return;
-    bury("c", c.id);
-    DB.tx.filter(x=>x.customerId===c.id).forEach(x=>bury("x",x.id));
     DB.customers = DB.customers.filter(x=>x.id!==c.id);
     DB.tx = DB.tx.filter(x=>x.customerId!==c.id);
     save(); render(); toast("تم الحذف");
@@ -1176,11 +1264,24 @@ document.addEventListener("click", e=>{
   if(act==="payLine"){ payModal({lineId:t.dataset.line, cid:(findLine(t.dataset.line)||{}).c?.id}); return; }
   if(act==="payCust"){ payModal({cid:t.dataset.id}); return; }
   if(act==="doPay"){ doPay(); return; }
+
+  /* ---- تجديد الباقات ---- */
+  if(act==="renewSelectAll"){ renewEligibleLines(UI.renewMonth).forEach(({l})=>UI.renewSel[l.id]=true); render(); return; }
+  if(act==="renewSelectNone"){ UI.renewSel={}; render(); return; }
+  if(act==="renewReview"){ renewReviewModal(); return; }
+  if(act==="doRenew"){ doRenew(); return; }
+  if(act==="doRenewPay"){ doRenewPay(); return; }
+  if(act==="editAddons"){ addonsModal(t.dataset.line); return; }
+  if(act==="aoAdd"){
+    const box=$("#aoRows"); const empty=$("#aoEmpty"); if(empty) empty.remove();
+    box.insertAdjacentHTML("beforeend", addonRow(null)); return;
+  }
+  if(act==="aoRm"){ t.closest(".ao-row").remove(); return; }
+  if(act==="aoSave"){ saveAddons(); return; }
   if(act==="ledger"){ ledgerModal(t.dataset.line); return; }
   if(act==="detail"){ detailModal(t.dataset.id); return; }
   if(act==="delTx"){
     if(!confirm("حذف الحركة دي؟")) return;
-    bury("x", t.dataset.tx);
     DB.tx = DB.tx.filter(x=>x.id!==t.dataset.tx);
     save(); closeModal(); render(); toast("اتحذفت");
     return;
@@ -1201,52 +1302,8 @@ document.addEventListener("click", e=>{
       "أحمد محمد,01001234567,جديد,08/01/2026,250","أحمد محمد,01007654321,تحويل,08/01/2026,180","منى علي,01112223334,جديد,15/02/2026,300"].join("\n"),"text/csv");
     return;
   }
-  if(act==="saveSync"){
-    if($("#syUrl")) DB.sync.url = $("#syUrl").value.trim();
-    if($("#syKey")) DB.sync.key = $("#syKey").value.trim();
-    if($("#syBranch")) DB.sync.branch = $("#syBranch").value.trim();
-    if(!DB.sync.device) DB.sync.device = uid();
-    DB.sync.lastErr = "";
-    persistNow(); render(); refreshPill();
-    toast("اتحفظت");
-    if(syncOn()) syncNow(false);
-    return;
-  }
-  if(act==="syncNow"){ syncNow(false); return; }
-  if(act==="testSync"){ testSync(); return; }
-  if(act==="guide"){ guideModal(); return; }
-  if(act==="copyGs"){
-    const ta=$("#gsBox"); if(!ta) return;
-    ta.focus(); ta.select();
-    const code = document.getElementById("gsCode").textContent;
-    const done=()=>toast("الكود اتنسخ — الزقه في Apps Script");
-    if(navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(code).then(done).catch(()=>{ try{document.execCommand("copy");done();}catch(e){toast("النص محدَّد — انسخه يدوي");} });
-    else { try{ document.execCommand("copy"); done(); }catch(e){ toast("النص محدَّد — انسخه يدوي"); } }
-    return;
-  }
-  if(act==="backup"){
-    if(!DB.customers.length){ toast("مفيش بيانات تتنسخ"); return; }
-    downloadFile(`نسخة-حساب-فودافون-${todayISO()}.json`, JSON.stringify(DB,null,2), "application/json");
-    return;
-  }
-  if(act==="copyBackup"){ showBackupText(); return; }
-  if(act==="copyText"){
-    const ta=$("#bkText"); if(!ta) return;
-    ta.focus(); ta.select();
-    const done=()=>{ toast("اتنسخت — الزقها في مكان آمن"); closeModal(); };
-    if(navigator.clipboard && navigator.clipboard.writeText){
-      navigator.clipboard.writeText(backupText()).then(done).catch(()=>{ try{ document.execCommand("copy"); done(); }catch(e){ toast("اعمل نسخ يدوي: النص محدَّد بالفعل"); } });
-    }else{ try{ document.execCommand("copy"); done(); }catch(e){ toast("اعمل نسخ يدوي: النص محدَّد بالفعل"); } }
-    return;
-  }
+  if(act==="backup"){ downloadFile(`نسخة-حساب-فودافون-${todayISO()}.json`, JSON.stringify(DB,null,2), "application/json"); return; }
   if(act==="restore"){ restore(); return; }
-  if(act==="restorePaste"){
-    const v=$("#restoreText").value;
-    if(!v.trim()){ toast("الزق النص الأول"); return; }
-    if(DB.customers.length && !confirm("الاستعادة هتستبدل البيانات الحالية. تمام؟")) return;
-    restoreFromText(v,"لصق");
-    return;
-  }
   if(act==="csvCustomers"){ exportCustomersCsv(); return; }
   if(act==="csvTx"){ exportTxCsv(); return; }
   if(act==="saveSettings"){
@@ -1254,6 +1311,7 @@ document.addEventListener("click", e=>{
     DB.settings.currency=$("#setCur").value.trim()||"ج.م";
     DB.settings.reportDay=Math.min(28,Math.max(1,parseNum($("#setDay").value)||8));
     DB.settings.generateOnDueDate = $("#setGen").value==="1";
+    DB.settings.chargeMode = $("#setMode").value==="manual" ? "manual" : "auto";
     save(); render(); toast("اتحفظت الإعدادات");
     return;
   }
@@ -1276,6 +1334,18 @@ document.addEventListener("change", e=>{
   if(e.target.id==="repDay"){ DB.settings.reportDay=Math.min(28,Math.max(1,parseNum(e.target.value)||8)); save(); render(); }
   if(e.target.id==="invCust"){ UI.invCustomer=e.target.value; render(); }
   if(e.target.id==="invMonth"){ UI.invMonth=e.target.value; render(); }
+  if(e.target.id==="renewMonth"){ UI.renewMonth=e.target.value; UI.renewSel={}; render(); }
+  if(e.target.classList.contains("renew-cb")){
+    const id=e.target.dataset.line;
+    if(e.target.checked) UI.renewSel[id]=true; else delete UI.renewSel[id];
+    render();
+  }
+  if(e.target.classList.contains("renew-cust")){
+    const c=customerById(e.target.dataset.cid); if(!c) return;
+    c.lines.forEach(l=>{ if(l.stopped||hasChargeInPeriod(l.id,UI.renewMonth)) return;
+      if(e.target.checked) UI.renewSel[l.id]=true; else delete UI.renewSel[l.id]; });
+    render();
+  }
 });
 
 /* ---------- actions ---------- */
@@ -1288,7 +1358,11 @@ function saveCustomer(){
     number: digits(r.querySelector(".f-num").value.trim()),
     type: r.querySelector(".f-type").value,
     startDate: r.querySelector(".f-date").value || todayISO(),
-    monthly: parseNum(r.querySelector(".f-amt").value)
+    monthly: parseNum(r.querySelector(".f-amt").value),
+    addons: [...r.querySelectorAll(".lao-row")].map(a=>({
+      name: a.querySelector(".lao-name").value.trim(),
+      amount: parseNum(a.querySelector(".lao-amt").value)
+    })).filter(a=>a.name || a.amount)
   })).filter(r=>r.number || r.monthly);
   if(!rows.length){ toast("أضف خط واحد على الأقل برقمه وقيمة فاتورته"); return; }
   if(rows.length>5){ toast("الحد الأقصى ٥ خطوط"); return; }
@@ -1297,15 +1371,10 @@ function saveCustomer(){
     const c = customerById(id);
     c.name=name; c.note=$("#cnote").value.trim();
     const keep = new Set(rows.map(r=>r.id));
-    c.lines.filter(l=>!keep.has(l.id)).forEach(l=>{
-      DB.tx.filter(t=>t.lineId===l.id).forEach(t=>bury("x",t.id));
-      DB.tx = DB.tx.filter(t=>t.lineId!==l.id);
-    });
+    c.lines.filter(l=>!keep.has(l.id)).forEach(l=>{ DB.tx = DB.tx.filter(t=>t.lineId!==l.id); });
     c.lines = rows.map(r=>{ const old=c.lines.find(l=>l.id===r.id); return Object.assign({},old||{},r); });
-    touchC(c);
   }else{
-    const c = { id:uid(), name, note:$("#cnote").value.trim(), lines:rows, created:todayISO() };
-    touchC(c); DB.customers.push(c);
+    DB.customers.push({ id:uid(), name, note:$("#cnote").value.trim(), lines:rows, created:todayISO() });
   }
   const n = ensureInvoices();
   save(); closeModal(); render();
@@ -1316,21 +1385,55 @@ function doPay(){
   const amt=parseNum($("#pamt").value), date=$("#pdate").value||todayISO(), note=$("#pnote").value.trim();
   if(amt<=0){ toast("اكتب مبلغ صحيح"); return; }
   if(lid){
-    const t = {id:uid(),kind:"payment",customerId:cid,lineId:lid,amount:amt,date,period:String(date).slice(0,7),note:note||"دفعة"};
-    touchX(t); DB.tx.push(t);
+    DB.tx.push({id:uid(),kind:"payment",customerId:cid,lineId:lid,amount:amt,date,period:String(date).slice(0,7),note:note||"دفعة"});
     save();
   }else{
     payCustomer(cid, amt, date, note);
   }
   closeModal(); render(); toast(`اتسجل دفع ${money(amt)} ${DB.settings.currency}`);
 }
+/* إنشاء التجديدات للخطوط المحددة ثم فتح نافذة السداد */
+function doRenew(){
+  const mk = UI.renewMonth;
+  const ids = Object.keys(UI.renewSel).filter(id=>UI.renewSel[id]);
+  const cids = [];
+  let done=0;
+  ids.forEach(id=>{
+    const tx = renewLine(id, mk);
+    if(tx){ done++; cids.push(tx.customerId); }
+  });
+  if(!done){ toast("مفيش تجديدات اتعملت (يمكن كانت متجددة بالفعل)"); return; }
+  save();
+  UI.renewSel = {};
+  toast(`تم تجديد ${done} خط لشهر ${monthLabel(mk)}`);
+  renewPayModal(cids);   // الانتقال لتسجيل السداد
+  render();
+}
+/* تسجيل الدفعات المُدخلة في نافذة ما بعد التجديد */
+function doRenewPay(){
+  const inputs = [...document.querySelectorAll(".rpay")];
+  let total=0, count=0;
+  inputs.forEach(inp=>{
+    const cid=inp.dataset.cid, amt=parseNum(inp.value);
+    if(amt>0.009){ payCustomer(cid, amt, todayISO(), "سداد بعد التجديد"); total+=amt; count++; }
+  });
+  save(); closeModal(); render();
+  toast(count?`اتسجل سداد ${money(total)} ${DB.settings.currency} لـ ${count} عميل`:"تم — من غير سداد دلوقتي");
+}
+/* حفظ إضافات خط من النافذة السريعة */
+function saveAddons(){
+  const lineId=$("#aoLine").value; const f=findLine(lineId); if(!f) return;
+  const rows=[...document.querySelectorAll(".ao-row")].map(r=>({
+    name:r.querySelector(".ao-name").value.trim(),
+    amount:parseNum(r.querySelector(".ao-amt").value)
+  })).filter(a=>a.name || a.amount);
+  f.l.addons = rows;
+  save(); closeModal(); render(); toast("اتحفظت الإضافات");
+}
 function doImport(){
   const raw = $("#imp").value.trim();
   if(!raw){ toast("الصق البيانات الأول"); return; }
-  importSheet(raw);
-}
-function importSheet(raw){
-  const lines = String(raw).replace(/^\uFEFF/,"").split(/\r?\n/).filter(l=>l.trim());
+  const lines = raw.split(/\r?\n/).filter(l=>l.trim());
   let added=0, newCust=0, skipped=0;
   lines.forEach((ln,idx)=>{
     const sep = ln.includes("\t") ? "\t" : (ln.split(",").length>=3 ? "," : ";");
@@ -1347,77 +1450,24 @@ function importSheet(raw){
       type: /تحويل|transfer/i.test(type||"") ? "تحويل":"جديد",
       startDate: parseDateLoose(date) || todayISO(),
       monthly: parseNum(amt) });
-    touchC(c); added++;
+    added++;
   });
   const inv = ensureInvoices();
   save(); UI.tab="customers"; render();
   toast(`تم: ${newCust} عميل جديد · ${added} خط · ${inv} فاتورة${skipped?` · ${skipped} سطر متخطّى`:""}`);
 }
 function restore(){
-  const inp=document.createElement("input");
-  inp.type="file"; inp.accept=".json,.csv,.txt,application/json,text/csv,text/plain";
-  inp.style.cssText="position:fixed;inset-inline-start:-9999px;opacity:0";
-  document.body.appendChild(inp);           // لازم يكون في الصفحة عشان يشتغل على الموبايل
-  inp.addEventListener("change", ()=>{
-    const f = inp.files && inp.files[0];
-    if(!f){ toast("مااتحددش ملف"); inp.remove(); return; }
-    if(f.size===0){ toast("الملف فاضي (٠ بايت) — التنزيل ما اكتملش. استخدم «نسخ النسخة كنص»"); inp.remove(); return; }
+  const inp=document.createElement("input"); inp.type="file"; inp.accept=".json,application/json";
+  inp.onchange=()=>{ const f=inp.files[0]; if(!f) return;
     const r=new FileReader();
-    r.onerror = ()=>{ toast("مقدرتش أقرأ الملف — جرّب «استعادة بلصق النص»"); inp.remove(); };
-    r.onload  = ()=>{ restoreFromText(r.result, f.name); inp.remove(); };
-    r.readAsText(f,"utf-8");
-  });
+    r.onload=()=>{ try{
+        const d=JSON.parse(r.result);
+        if(!d.customers) throw new Error("bad");
+        DB.customers=d.customers; DB.tx=d.tx||[]; DB.settings=Object.assign(DB.settings,d.settings||{});
+        ensureInvoices(); save(); render(); toast("اتسترجعت النسخة");
+      }catch(err){ toast("الملف مش صالح"); } };
+    r.readAsText(f,"utf-8"); };
   inp.click();
-}
-/* يقبل: JSON نسخة احتياطية / مصفوفة عملاء / ملف CSV / حتى نص متلزق فيه JSON */
-function restoreFromText(text, srcName){
-  let s = String(text||"").replace(/^\uFEFF/,"").trim();
-  if(!s){ toast("محتوى الملف فاضي — استخدم «نسخ النسخة كنص»"); return false; }
-
-  if(s[0]==="<"){                      // اتحفظ كصفحة HTML بدل ملف النسخة
-    const m = s.match(/\{[\s\S]*"customers"[\s\S]*\}/);
-    if(!m){ toast("دي صفحة ويب مش نسخة احتياطية — اختار ملف .json"); return false; }
-    s = m[0];
-  }
-  if(s[0]!=="{" && s[0]!=="["){        // على الأرجح ملف CSV/Excel
-    if(/[,\t;]/.test(s)){
-      if(!confirm("الملف ده شيت مش نسخة احتياطية. أستورده كبيانات عملاء وخطوط؟")) return false;
-      importSheet(s); return true;
-    }
-    toast("محتوى الملف مش نسخة صالحة — بيبدأ بـ: "+s.slice(0,30));
-    return false;
-  }
-
-  let d;
-  try{ d = JSON.parse(s); }
-  catch(err){
-    const m = s.match(/\{[\s\S]*\}/);
-    try{ d = JSON.parse(m?m[0]:""); }
-    catch(e2){ toast("الملف ناقص أو اتعدّل عليه — "+String(err.message).slice(0,50)); return false; }
-  }
-  if(Array.isArray(d)) d = {customers:d, tx:[]};
-  if(!d || !Array.isArray(d.customers)){ toast("النسخة مفيهاش قايمة عملاء"); return false; }
-
-  DB.customers = d.customers;
-  DB.tx        = Array.isArray(d.tx) ? d.tx : [];
-  DB.settings  = Object.assign(DB.settings, d.settings||{});
-  DB.customers.forEach(c=>touchC(c));           // ترفعها المزامنة لباقي الفروع
-  DB.tx.forEach(t=>touchX(t));
-  ensureInvoices(); save(); UI.open={}; UI.tab="customers"; render();
-  toast(`اتسترجع ${DB.customers.length} عميل و ${DB.tx.length} حركة`);
-  return true;
-}
-function backupText(){ return JSON.stringify(DB); }
-function showBackupText(){
-  openModal(`
-    <div class="modal-h"><h3>النسخة الاحتياطية كنص</h3><button class="x" data-act="close">×</button></div>
-    <div class="modal-b">
-      <p class="tiny muted" style="margin-top:0">دي كل بياناتك في نص واحد. اضغط «نسخ» والزقه في ملاحظة عندك أو ابعته لنفسك على واتساب.
-      وقت الاستعادة الزقه في خانة «استعادة بلصق النص».</p>
-      <textarea id="bkText" rows="8" readonly>${esc(backupText())}</textarea>
-    </div>
-    <div class="modal-f"><button class="btn primary" data-act="copyText">نسخ</button><button class="btn ghost" data-act="close">إغلاق</button></div>`);
-  setTimeout(()=>{ const t=$("#bkText"); if(t){ t.focus(); t.select(); } },60);
 }
 
 /* ---------- export / print ---------- */
@@ -1463,153 +1513,47 @@ function printHtml(inner){
   setTimeout(()=>{ p.style.display="none"; p.innerHTML=""; view.style.display=""; },600);
 }
 
-/* ============================================================
-   المزامنة بين الفروع (Google Sheet)
-   كل سجل بيتبعت لوحده — الفرع بيرفع اللي اتغيّر عنده بس،
-   فمفيش فرع بيمسح شغل فرع تاني.
-   ============================================================ */
-let SYNCING=false, syncT=null;
-/* لو التطبيق شغّال جوّه حساب جوجل بتاع المستخدم، الاتصال بيتم مباشرة وبهويته */
-const GAS = !!(window.google && window.google.script && window.google.script.run);
-const syncOn = () => GAS || !!(DB.sync && DB.sync.url);
-function callSync(body){
-  if(GAS) return new Promise((ok,bad)=>{
-    window.google.script.run
-      .withSuccessHandler(ok)
-      .withFailureHandler(e=>bad(new Error((e&&e.message)||"مقدرتش أوصل لجوجل")))
-      .syncApi(body);
-  });
-  return fetch(DB.sync.url, {method:"POST", headers:{"Content-Type":"text/plain;charset=utf-8"}, body:JSON.stringify(body)})
-    .then(r=>{ if(!r.ok) throw new Error("HTTP "+r.status); return r.json(); });
+/* ---------- تسجيل الدخول (اختياري — لما USE_LOGIN = true) ---------- */
+function showLogin(msg){
+  const v = $("#view"); if(!v) return;
+  v.innerHTML = `
+  <div class="card" style="max-width:420px;margin:48px auto"><div class="card-h"><h3>تسجيل الدخول</h3></div>
+  <div class="card-b">
+    <div><label>البريد الإلكتروني</label><input type="email" id="lgEmail" autocomplete="username" placeholder="you@example.com"></div>
+    <div style="margin-top:10px"><label>كلمة المرور</label><input type="password" id="lgPass" autocomplete="current-password"></div>
+    ${msg?`<p class="tiny" style="color:var(--red);margin-bottom:0">${esc(msg)}</p>`:""}
+    <button class="btn primary" data-act="doLogin" style="margin-top:14px;width:100%">دخول</button>
+    <p class="tiny muted">أنشئ المستخدم من: Firebase Console ← Authentication ← Users ← Add user.</p>
+  </div></div>`;
 }
-const pendingCount = () => Object.keys(DB.dirty.c).length + Object.keys(DB.dirty.x).length + DB.graves.length;
-function timeAgo(ms){
-  if(!ms) return "";
-  const s=Math.floor((Date.now()-ms)/1000);
-  if(s<60) return "الآن"; if(s<3600) return "من "+Math.floor(s/60)+" د";
-  if(s<86400) return "من "+Math.floor(s/3600)+" س"; return "من "+Math.floor(s/86400)+" يوم";
+function doLogin(){
+  const email=($("#lgEmail").value||"").trim(), pass=$("#lgPass").value||"";
+  if(!email||!pass){ showLogin("اكتب البريد وكلمة المرور"); return; }
+  firebase.auth().signInWithEmailAndPassword(email, pass)
+    .catch(err=>showLogin("فشل الدخول: "+(err&&err.code||"")));
 }
-function syncState(){
-  if(!syncOn()) return {t:"المزامنة مقفولة", c:"off"};
-  if(SYNCING)   return {t:"بيزامن…", c:"go"};
-  const p = pendingCount();
-  if(DB.sync.lastErr) return {t:(p?p+" في الانتظار":"فشلت المزامنة"), c:"bad"};
-  if(p) return {t:p+" في الانتظار", c:"warn"};
-  return {t:"متزامن "+timeAgo(DB.sync.lastOkAt), c:"ok"};
-}
-function refreshPill(){ const el=$("#syncPill"); if(!el) return; const s=syncState(); el.className="pill "+s.c; el.textContent=s.t; }
-function scheduleSync(){ if(!syncOn()) return; clearTimeout(syncT); syncT=setTimeout(()=>syncNow(true), 2500); refreshPill(); }
-function persistNow(){
-  const s=JSON.stringify(DB);
-  if(window.storage){ try{ const p=window.storage.set(KEY,s); if(p&&p.catch) p.catch(()=>{}); }catch(e){} }
-  if(LOCAL){ try{ LOCAL.setItem(KEY,s); }catch(e){} }
-}
-function safeRender(){
-  const a=document.activeElement;
-  if($("#overlay").classList.contains("on")) return;
-  if(a && $("#view").contains(a) && /INPUT|TEXTAREA|SELECT/.test(a.tagName)) return;
-  render();
-}
-function outC(c){ return {id:c.id,name:c.name,note:c.note||"",lines:c.lines||[],updatedAt:c.updatedAt||Date.now(),deleted:false}; }
-function outX(t){
-  const c=customerById(t.customerId), f=findLine(t.lineId);
-  return {id:t.id,kind:t.kind,customerId:t.customerId,lineId:t.lineId,amount:t.amount,date:t.date,
-          period:t.period||"",note:t.note||"",branch:t.branch||"",
-          customerName:c?c.name:"",lineNumber:f?f.l.number:"",updatedAt:t.updatedAt||Date.now(),deleted:false};
-}
-function mergeRemote(d){
-  (d.customers||[]).forEach(r=>{
-    const i = DB.customers.findIndex(x=>x.id===r.id);
-    if(r.deleted){
-      if(i>=0){ DB.customers.splice(i,1); DB.tx = DB.tx.filter(t=>t.customerId!==r.id); }
-      delete DB.dirty.c[r.id]; return;
-    }
-    if(i<0){ DB.customers.push({id:r.id,name:r.name,note:r.note,lines:r.lines||[],updatedAt:Number(r.updatedAt)||0}); }
-    else if((Number(r.updatedAt)||0) > (DB.customers[i].updatedAt||0)){
-      Object.assign(DB.customers[i], {name:r.name,note:r.note,lines:r.lines||[],updatedAt:Number(r.updatedAt)||0});
-      delete DB.dirty.c[r.id];
-    }
-  });
-  (d.tx||[]).forEach(r=>{
-    const i = DB.tx.findIndex(x=>x.id===r.id);
-    if(r.deleted){ if(i>=0) DB.tx.splice(i,1); delete DB.dirty.x[r.id]; return; }
-    const rec = {id:r.id,kind:r.kind,customerId:r.customerId,lineId:r.lineId,amount:Number(r.amount)||0,
-                 date:String(r.date||"").slice(0,10),period:r.period||"",note:r.note||"",branch:r.branch||"",
-                 updatedAt:Number(r.updatedAt)||0};
-    if(i<0) DB.tx.push(rec);
-    else if((Number(r.updatedAt)||0) > (DB.tx[i].updatedAt||0)){ DB.tx[i]=rec; delete DB.dirty.x[r.id]; }
-  });
-}
-async function syncNow(silent){
-  if(!syncOn()){ if(!silent) toast("اضبط رابط المزامنة الأول"); return false; }
-  if(SYNCING) return false;
-  SYNCING=true; refreshPill();
-
-  const sentC = DB.customers.filter(c=>DB.dirty.c[c.id]);
-  const sentX = DB.tx.filter(t=>DB.dirty.x[t.id]);
-  const graves = DB.graves.slice();
-  const stampC={}, stampX={};
-  sentC.forEach(c=>stampC[c.id]=c.updatedAt); sentX.forEach(t=>stampX[t.id]=t.updatedAt);
-
-  const body = {
-    key: DB.sync.key||"", since: Number(DB.sync.lastSync)||0, device: DB.sync.device, branch: DB.sync.branch||"",
-    changes:{
-      customers: sentC.map(outC).concat(graves.filter(g=>g.t==="c").map(g=>({id:g.id,updatedAt:g.updatedAt,deleted:true}))),
-      tx:        sentX.map(outX).concat(graves.filter(g=>g.t==="x").map(g=>({id:g.id,updatedAt:g.updatedAt,deleted:true})))
-    }
-  };
-  try{
-    const d = await callSync(body);
-    if(!d || !d.ok) throw new Error((d&&d.error)||"استجابة غير مفهومة");
-    mergeRemote(d);
-    if(d.user) DB.sync.user = d.user;
-    sentC.forEach(c=>{ if(c.updatedAt===stampC[c.id]) delete DB.dirty.c[c.id]; });
-    sentX.forEach(t=>{ if(t.updatedAt===stampX[t.id]) delete DB.dirty.x[t.id]; });
-    const gset = new Set(graves.map(g=>g.t+g.id));
-    DB.graves = DB.graves.filter(g=>!gset.has(g.t+g.id));
-    DB.sync.lastSync = Number(d.now)||Date.now();
-    DB.sync.lastOkAt = Date.now(); DB.sync.lastErr = "";
-    ensureInvoices(); persistNow(); SYNCING=false; refreshPill(); safeRender();
-    if(!silent) toast("تمت المزامنة");
-    return true;
-  }catch(err){
-    DB.sync.lastErr = String((err&&err.message)||err).slice(0,90);
-    persistNow(); SYNCING=false; refreshPill();
-    if(!silent) toast("فشلت المزامنة: "+DB.sync.lastErr);
-    return false;
-  }
-}
-async function testSync(){
-  if(GAS){
-    try{ const d = await callSync({since:0, changes:{customers:[],tx:[]}});
-      toast(d&&d.ok ? "متصل بحسابك"+(d.user?" ("+d.user+")":"")+" ✓" : "الرد غير متوقع"); }
-    catch(e){ toast("مشكلة: "+String(e.message||e).slice(0,60)); }
-    return;
-  }
-  const url = ($("#syUrl")&&$("#syUrl").value.trim()) || DB.sync.url;
-  if(!url){ toast("اكتب الرابط الأول"); return; }
-  if(!/^https:\/\/script\.google\.com\/macros\/s\/.+\/exec$/.test(url))
-    toast("تنبيه: الرابط المفروض يخلص بـ /exec");
-  try{
-    const r = await fetch(url + (url.indexOf("?")>=0?"&":"?") + "ping=1", {method:"GET"});
-    const d = await r.json();
-    toast(d && d.ok ? "الاتصال تمام ✓" : "الرد غير متوقع — راجع النشر");
-  }catch(e){ toast("مفيش اتصال: "+String(e.message||e).slice(0,60)); }
-}
+function doLogout(){ if(window.firebase&&firebase.auth) firebase.auth().signOut(); }
 
 /* ---------- boot ---------- */
+function afterFirstLoad(){
+  const n = ensureInvoices();
+  render();
+  if(CLOUD) setStatus("cloud"); else setStatus("local");
+  if(n) toast(`اتضافت ${n} فاتورة شهرية تلقائيًا`);
+}
 (async function(){
   await load();
-  if(!CAN_SAVE) $("#storeWarn").style.display="block";
-  const n = ensureInvoices();
-  render(); refreshPill();
-  if(n) toast(`اتضافت ${n} فاتورة شهرية تلقائيًا`);
-  if(syncOn()){
-    syncNow(true);
-    setInterval(()=>{ if(!document.hidden) syncNow(true); }, 60000);
-    window.addEventListener("online", ()=>syncNow(true));
-    window.addEventListener("focus", ()=>syncNow(true));
-    document.addEventListener("visibilitychange", ()=>{ if(!document.hidden) syncNow(true); });
+  if(CLOUD){
+    if(USE_LOGIN){
+      firebase.auth().onAuthStateChanged(user=>{
+        if(user){ if(!cloudReady) bindCloud(afterFirstLoad); else render(); }
+        else { cloudReady=false; if(dbref){ dbref.off(); dbref=null; } showLogin(); }
+      });
+    }else{
+      bindCloud(afterFirstLoad);
+    }
+  }else{
+    afterFirstLoad(); // وضع التخزين المحلي
   }
 })();
 </script>
